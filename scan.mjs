@@ -395,7 +395,11 @@ async function main() {
   }
 
   const config = parseYaml(readFileSync(PORTALS_PATH, 'utf-8'));
-  const companies = config.tracked_companies || [];
+  const blocklist = config.company_blocklist || [];
+  const companies = [
+    ...(config.tracked_companies || []),
+    ...(config.linkedin_companies || []).map(e => ({ ...e, _blocklist: blocklist })),
+  ];
   const titleFilter = buildTitleFilter(config.title_filter);
   const locationFilter = buildLocationFilter(config.location_filter);
 

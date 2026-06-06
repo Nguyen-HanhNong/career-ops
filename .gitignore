@@ -18,6 +18,9 @@ batch/tracker-additions/**/*.tsv
 !batch/tracker-additions/.gitkeep
 jds/*
 !jds/.gitkeep
+tmp/*.tsv
+batch/
+data/applications.md.bak
 
 # Writing samples (user's personal files — never committed)
 writing-samples/*
@@ -32,6 +35,7 @@ modes/_profile.md
 
 # Secrets (never commit — use .env.example as template)
 .env
+gcp-oauth.keys.json
 
 # Generated
 .resolved-prompt-*
@@ -44,7 +48,17 @@ bun.lock
 *.mp4
 
 # Claude Code local
+.claude/settings.json
 .claude/settings.local.json
 .claude/memory/
+.claude/projects/
 career-dashboard
 package-lock.json
+settings.local.json
+
+# Temp files
+tmp/
+
+
+# Playwright
+.playwright-mcp/

@@ -139,11 +139,65 @@ Para empresas con API pública o feed estructurado **que no estén en `local_par
 
 Los `search_queries` con `site:` filters cubren portales de forma transversal (todos los Ashby, todos los Greenhouse, etc.). Útil para descubrir empresas NUEVAS que aún no están en `tracked_companies`, pero los resultados pueden estar desfasados. Tras filtrar hits de empresas en `local_parser_ok`, los resultados restantes se deduplican con Niveles 0–2.
 
+### Nivel 4 — Job Alert Emails vía Gmail MCP (TIEMPO REAL)
+
+**Prerrequisito:** Gmail MCP conectado en la sesión actual. En Claude Code: `/mcp` → `claude.ai Gmail`. En OpenCode: servidor local `gmail` configurado en `opencode.jsonc` con credenciales en `~/.gmail-mcp/`. Si no está conectado, omitir este nivel silenciosamente.
+
+Lee emails de alertas de empleo de LinkedIn, Indeed y Wellfound del buzón dedicado y extrae ofertas nuevas.
+
+**Configuración:** Leer `linkedin_alerts` en `portals.yml`:
+- `enabled`: si es `false`, omitir el nivel
+- `processed_label_id` / `processed_label_name`: etiqueta Gmail que marca emails ya procesados
+- `sources[]`: lista de fuentes, cada una con `name`, `senders[]`, y `url_pattern`
+
+**Workflow:**
+
+1. Construir query Gmail con todos los remitentes configurados en `sources[].senders`:
+   ```
+   from:(donotreply@jobalert.indeed.com OR jobalert@indeed.com OR jobs-noreply@linkedin.com OR jobalerts-noreply@linkedin.com OR noreply@wellfound.com OR notifications@wellfound.com OR team@wellfound.com) -label:career-ops-processed
+   ```
+2. Para cada thread, leer el cuerpo completo con `get_thread`
+3. Identificar la fuente por el remitente (`sender`) y extraer listings según el formato de cada plataforma:
+
+   **LinkedIn** (`jobs-noreply@linkedin.com` / `jobalerts-noreply@linkedin.com`):
+   - Asunto: `"[N] new jobs match your search"` o `"New jobs for [query]"`
+   - Cuerpo: bloques con título, empresa, ubicación y URL `https://www.linkedin.com/comm/jobs/view/{jobId}?...`
+   - URL canónica: `https://www.linkedin.com/jobs/view/{jobId}` (quitar tracking params)
+   - Source label: `linkedin-alert`
+
+   **Indeed** (`donotreply@jobalert.indeed.com` / `jobalert@indeed.com`):
+   - Asunto: `"[N] new [query] jobs in [location]"` o `"New jobs matching your alert"`
+   - Cuerpo HTML: cada oferta tiene título (link), empresa, ubicación, salario opcional
+   - Los links son redirect URLs del tipo `https://m.indeed.com/...?jk={jobId}` — extraer `jk=` param
+   - URL canónica: `https://www.indeed.com/viewjob?jk={jobId}`
+   - Ignorar emails de confirmación (asunto contiene "is now active" o "job alert is active")
+   - Source label: `indeed-alert`
+
+   **Wellfound** (`noreply@wellfound.com` / `notifications@wellfound.com` / `team@wellfound.com`):
+   - Asunto: `"New jobs matching [query]"` o `"[N] new startup jobs"`
+   - Cuerpo: bloques con nombre del startup, título del puesto, ubicación
+   - URLs del tipo `https://wellfound.com/jobs/{id}-{slug}` — usar directamente
+   - Source label: `wellfound-alert`
+
+4. Aplicar `title_filter` y `location_filter` de `portals.yml` a cada listing
+5. Deduplicar contra `scan-history.tsv`, `applications.md`, `pipeline.md`
+6. Para cada oferta nueva que pase filtros:
+   a. Añadir a `pipeline.md`: `- [ ] {url} | {company} | {title}`
+   b. Registrar en `scan-history.tsv`: `{url}\t{date}\t{source_label}\t{title}\t{company}\tadded`
+7. Etiquetar el thread como procesado: `label_thread(threadId, "Label_1")`
+8. Si un email contiene ofertas pero todas son duplicadas/filtradas → etiquetar igualmente como procesado
+
+**Casos especiales:**
+- Emails de confirmación/activación de alerta (asunto: "is now active", "alert is set up", "alert created") → etiquetar como procesado inmediatamente sin intentar extraer ofertas
+- Si el cuerpo del email no tiene el formato esperado → etiquetar como procesado y anotar en resumen
+- Si Gmail MCP no está disponible → omitir nivel silenciosamente
+
 **Prioridad de ejecución:**
 1. Nivel 0: Local parser → empresas con `parser:` configurado y script existente; construir `local_parser_ok`
 2. Nivel 1: Playwright → `tracked_companies` con `careers_url`, **excepto** `local_parser_ok`
 3. Nivel 2: API → `tracked_companies` con `api:`, **excepto** `local_parser_ok`
 4. Nivel 3: WebSearch → todos los `search_queries` con `enabled: true`; descartar hits de empresas en `local_parser_ok`
+5. **Nivel 4: LinkedIn Alerts** → si `linkedin_alerts.enabled: true` y Gmail MCP conectado
 
 Los niveles son aditivos — se ejecutan en orden, los resultados se mezclan y deduplican. Las empresas en `local_parser_ok` **no** pasan por Niveles 1 ni 2; en Nivel 3 solo aportan descubrimiento transversal (otras empresas en el mismo portal).
 
@@ -198,6 +252,9 @@ Los niveles son aditivos — se ejecutan en orden, los resultados se mezclan y d
    c. **Omitir** el resultado si `company` (normalizado) coincide con algún nombre en `local_parser_ok`
    d. Acumular el resto en lista de candidatos (dedup con Nivel 0+1+2)
 
+5.5. **Nivel 4 — LinkedIn Alerts** (si `linkedin_alerts.enabled: true` y Gmail MCP disponible):
+   Ejecutar el workflow descrito en la sección Nivel 4 arriba. Acumular resultados en lista de candidatos.
+
 6. **Filtrar por título** usando `title_filter` de `portals.yml`:
    - Al menos 1 keyword de `positive` debe aparecer en el título (case-insensitive)
    - 0 keywords de `negative` deben aparecer
@@ -231,7 +288,8 @@ Los niveles son aditivos — se ejecutan en orden, los resultados se mezclan y d
         - Página contiene: "job no longer available" / "no longer open" / "position has been filled" / "this job has expired" / "page not found"
         - Solo navbar y footer visibles, sin contenido JD (contenido < ~300 chars)
    d. Si expirada: registrar en `scan-history.tsv` con status `skipped_expired` y descartar
-   e. Si activa: continuar al paso 8
+   e. Si hay contenido JD pero no control visible de Apply: seguir `scan_liveness.no_apply_control` de `portals.yml` (`drop` por defecto; `keep` añade a pipeline como revisión manual y registra `added_no_apply_review`)
+   f. Si activa: continuar al paso 8
 
    **No interrumpir el scan entero si una URL falla.** Si `browser_navigate` da error (timeout, 403, etc.), marcar como `skipped_expired` y continuar con la siguiente.
 
@@ -278,6 +336,7 @@ https://...	2026-02-10	WebSearch — AI PM	PM AI	ClosedCo	skipped_expired
 Portal Scan — {YYYY-MM-DD}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
 Queries ejecutados: N
+Alertas LinkedIn procesadas: N emails (Nivel 4)
 Ofertas encontradas: N total
 Filtradas por título: N relevantes
 Duplicadas: N (ya evaluadas o en pipeline)

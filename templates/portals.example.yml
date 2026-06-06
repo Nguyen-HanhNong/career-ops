@@ -21,6 +21,17 @@
 #   4. Adjust search_queries for your preferred job boards
 #   5. Set enabled: false on companies you don't care about
 
+# -- Liveness verification (optional) --
+# Used by `node scan.mjs --verify` and `node scan-full.mjs`.
+# Expired and invalid URLs are always dropped. `no_apply_control` only controls
+# pages that have JD content but no visible Apply button, which often happens on
+# login-gated job boards or iframe-based apply flows.
+#   drop = strict mode; skip these pages and record skipped_no_apply_control
+#   keep = add them to pipeline and record added_no_apply_review
+
+# scan_liveness:
+#   no_apply_control: keep
+
 # -- Location filter (optional) --
 # Filter scanned jobs by location. Applied AFTER title filter, BEFORE dedup.
 # If this entire block is absent, all locations pass (current default behavior).
@@ -390,21 +401,6 @@ search_queries:
 #     script: scripts/parsers/example_python_company_jobs.py
 #     format: jobs-json-v1
 #   enabled: true
-
-# ── Provider auto-detection ───────────────────────────────────────
-# scan.mjs auto-loads everything in providers/*.mjs and tries each
-# provider's detect() in order. URL patterns recognized:
-#
-#   greenhouse      job-boards(.eu)?.greenhouse.io/<slug>  (or api: field)
-#   ashby           jobs.ashbyhq.com/<slug>
-#   lever           jobs.lever.co/<slug>
-#   workable        apply.workable.com/<slug>
-#   smartrecruiters (careers|jobs).smartrecruiters.com/<slug>
-#   recruitee       <slug>.recruitee.com
-#
-# When the public careers URL is a branded custom domain (e.g.
-# careers.adyen.com), set `provider: smartrecruiters` explicitly to
-# bypass detect(). The `provider:` field wins over auto-detection.
 
 tracked_companies:
 

@@ -3,7 +3,7 @@ name: career-ops
 description: AI job search command center -- evaluate offers, generate CVs, scan portals, track applications
 arguments: mode # Claude Code specific
 user-invocable: true
-argument-hint: "[scan | deep | pdf | oferta | ofertas | apply | batch | tracker | pipeline | contacto | training | project | interview-prep | update]"
+argument-hint: "[scan | deep | pdf | oferta | ofertas | apply | batch | tracker | pipeline | contacto | training | project | interview-prep | update | clean]"
 license: MIT
 ---
 
@@ -33,6 +33,7 @@ Determine the mode from `$mode`:
 | `patterns` | `patterns` |
 | `followup` | `followup` |
 | `update` | `update` |
+| `clean` | `clean` |
 
 **Auto-pipeline detection:** If `$mode` is not a known sub-command AND contains JD text (keywords: "responsibilities", "requirements", "qualifications", "about the role", "we're looking for", company name + role) or a URL to a JD, execute `auto-pipeline`.
 
@@ -65,6 +66,7 @@ Available commands:
   /career-ops patterns  → Analyze rejection patterns and improve targeting
   /career-ops followup  → Follow-up cadence tracker: flag overdue, generate drafts
   /career-ops update    → Update career-ops system files with diff preview + compat check
+  /career-ops clean     → Delete old reports from reports/ (keeps today's only)
 
 Inbox: add URLs to data/pipeline.md → /career-ops pipeline
 Or paste a JD directly to run the full pipeline.
@@ -84,10 +86,12 @@ Applies to: `auto-pipeline`, `oferta`, `ofertas`, `pdf`, `contacto`, `apply`, `p
 ### Standalone modes (only their mode file):
 Read `modes/{mode}.md`
 
-Applies to: `tracker`, `deep`, `interview-prep`, `training`, `project`, `patterns`, `followup`
+Applies to: `tracker`, `deep`, `interview-prep`, `training`, `project`, `patterns`, `followup`, `clean`
 
 ### Modes delegated to subagent:
 For `scan`, `apply` (with Playwright), and `pipeline` (3+ URLs): launch as Agent with the content of `_shared.md` + `modes/{mode}.md` injected into the subagent prompt.
+
+**OpenCode scan rule:** when running in OpenCode, `/career-ops scan` MUST execute `node scan-full.mjs` instead of plain `node scan.mjs`. `scan-full.mjs` runs the zero-token scanner with Playwright verification and then checks Gmail alert emails for LinkedIn, Indeed, and Wellfound, matching the checks Claude Code's agent workflow performs.
 
 ```
 Agent(
