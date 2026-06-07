@@ -19,6 +19,7 @@ import path from 'path';
 
 const APPLICATIONS_PATH = 'data/applications.md';
 const REPORTS_DIR = 'reports';
+const APPLICATIONS_DIR = path.dirname(APPLICATIONS_PATH);
 
 const args = process.argv.slice(2);
 const recentFlag = args.indexOf('--recent');
@@ -43,11 +44,19 @@ function parseTracker() {
     entries.push({
       appNum: parseInt(m[1], 10),
       reportNum: parseInt(m[2], 10),
-      reportPath: m[3].trim(),   // e.g. reports/563-waymo-swe-2026-06-01.md
+      reportPath: normalizeTrackerLink(m[3].trim()),
+      displayPath: m[3].trim(),
     });
   }
 
   return entries;
+}
+
+function normalizeTrackerLink(linkPath) {
+  // Markdown links resolve relative to the tracker file. In the data/ layout,
+  // merge-tracker writes ../reports/... links so they are clickable from
+  // data/applications.md; normalize them back to repo-root paths for checks.
+  return path.normalize(path.join(APPLICATIONS_DIR, linkPath));
 }
 
 // ── Get all report files ────────────────────────────────────────────
@@ -65,7 +74,7 @@ function getReportFiles() {
 
 function main() {
   const allEntries = parseTracker();
-  const entries = recentN ? allEntries.slice(-recentN) : allEntries;
+  const entries = recentN ? allEntries.slice(0, recentN) : allEntries;
   const reportFiles = getReportFiles();
 
   const missing = [];      // report link in tracker but file doesn't exist
@@ -107,7 +116,7 @@ function main() {
   if (missing.length > 0) {
     console.log(`\n❌ Missing report files (link in tracker but file not on disk):`);
     for (const e of missing) {
-      console.log(`  App #${e.appNum} → [${e.reportNum}](${e.reportPath})  ← FILE NOT FOUND`);
+      console.log(`  App #${e.appNum} → [${e.reportNum}](${e.displayPath})  ← FILE NOT FOUND`);
     }
   }
 
