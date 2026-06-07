@@ -1016,6 +1016,104 @@ try {
   fail(`recruitee provider tests crashed: ${e.message}`);
 }
 
+// ── 15. PROVIDERS — Levels.fyi ───────────────────────────────────────
+
+console.log('\n15. Provider — levels');
+
+try {
+  const levels = (await import(pathToFileURL(join(ROOT, 'providers/levels.mjs')).href)).default;
+  const { parseLevelsJobsHtml } = await import(pathToFileURL(join(ROOT, 'providers/levels.mjs')).href);
+
+  if (levels.id === 'levels') pass('levels.id is "levels"');
+  else fail(`levels.id is ${JSON.stringify(levels.id)}`);
+
+  const hit = levels.detect({ name: 'Levels', careers_url: 'https://www.levels.fyi/jobs?jobId=123' });
+  if (hit && hit.url === 'https://www.levels.fyi/jobs') {
+    pass('levels.detect() resolves /jobs and strips selected jobId');
+  } else {
+    fail(`levels.detect() returned ${JSON.stringify(hit)}`);
+  }
+
+  if (levels.detect({ name: 'X', careers_url: 'https://example.com/jobs' }) === null) {
+    pass('levels.detect() returns null for non-Levels URLs');
+  } else {
+    fail('levels.detect() should return null for non-Levels URLs');
+  }
+
+  if (levels.detect({ name: 'Spoof', careers_url: 'https://evil.example/www.levels.fyi/jobs' }) === null) {
+    pass('levels.detect() rejects path-spoofed URLs');
+  } else {
+    fail('levels.detect() must NOT misdetect path-spoofed URLs');
+  }
+
+  if (levels.detect({ name: 'X', careers_url: 42 }) === null) {
+    pass('levels.detect() returns null for non-string careers_url');
+  } else {
+    fail('levels.detect() should treat non-string careers_url as missing');
+  }
+
+  const sampleHtml = [
+    '<div role="button" tabindex="0" class="company-jobs-preview-card-module-scss-module__abc__container">',
+    '<h2 class="company-jobs-preview-card-module-scss-module__abc__companyName">Stripe</h2>',
+    '<a href="/jobs?jobId=107341660962071238"><div class="company-jobs-preview-card-module-scss-module__abc__companyJobContainer"><div class="company-jobs-preview-card-module-scss-module__abc__companyJobTitle">Software Engineer<!-- --> <span class="company-jobs-preview-card-module-scss-module__abc__companyJobDate">a day ago</span></div><div class="company-jobs-preview-card-module-scss-module__abc__companyJobLocation">Seattle, WA · On-site · CA$264K - CA$396K</div></div></a>',
+    '<a href="/jobs?jobId=119466637106520774"><div class="company-jobs-preview-card-module-scss-module__abc__companyJobContainer"><div class="company-jobs-preview-card-module-scss-module__abc__companyJobTitle">Product Manager, Payments<!-- --> <span class="company-jobs-preview-card-module-scss-module__abc__companyJobDate">a day ago</span></div><div class="company-jobs-preview-card-module-scss-module__abc__companyJobLocation">Fully Remote</div></div></a>',
+    '</div>',
+    '<div role="button" tabindex="0" class="company-jobs-preview-card-module-scss-module__def__container">',
+    '<img alt="TurbineOne logo" src="x"/>',
+    '<a href="/jobs?jobId=127116953012576966"><div class="company-jobs-preview-card-module-scss-module__def__companyJobTitle">Full-Stack Product Engineer<!-- --> <span class="company-jobs-preview-card-module-scss-module__def__companyJobDate">2 months ago</span></div><div class="company-jobs-preview-card-module-scss-module__def__companyJobLocation">San Francisco, California, United States · On-site</div></a>',
+    '</div>',
+  ].join('');
+
+  const jobs = parseLevelsJobsHtml(sampleHtml);
+  if (jobs.length === 3) pass('parseLevelsJobsHtml extracts 3 job links');
+  else fail(`parseLevelsJobsHtml returned ${jobs.length} jobs, expected 3`);
+
+  if (jobs[0]?.title === 'Software Engineer' && jobs[0]?.company === 'Stripe') {
+    pass('parseLevelsJobsHtml extracts title and company from h2 card header');
+  } else {
+    fail(`row 0 = ${JSON.stringify(jobs[0])}`);
+  }
+
+  if (jobs[0]?.location === 'Seattle, WA · On-site') {
+    pass('parseLevelsJobsHtml strips compensation from location');
+  } else {
+    fail(`row 0 location = ${JSON.stringify(jobs[0]?.location)}`);
+  }
+
+  if (jobs[2]?.company === 'TurbineOne' && jobs[2]?.url === 'https://www.levels.fyi/jobs?jobId=127116953012576966') {
+    pass('parseLevelsJobsHtml falls back to logo alt and normalizes relative URLs');
+  } else {
+    fail(`row 2 = ${JSON.stringify(jobs[2])}`);
+  }
+
+  if (parseLevelsJobsHtml('').length === 0 && parseLevelsJobsHtml(null).length === 0) {
+    pass('parseLevelsJobsHtml handles empty/non-string input');
+  } else {
+    fail('parseLevelsJobsHtml should return [] for empty/non-string input');
+  }
+
+  let fetchUrl = '';
+  const fetched = await levels.fetch(
+    { name: 'Levels default' },
+    {
+      transport: 'http',
+      fetchText: async (url) => {
+        fetchUrl = url;
+        return sampleHtml;
+      },
+      fetchJson: async () => { throw new Error('fetchJson should not be called'); },
+    },
+  );
+  if (fetchUrl === 'https://www.levels.fyi/jobs' && fetched.length === 3) {
+    pass('levels.fetch() defaults to /jobs and parses returned HTML');
+  } else {
+    fail(`levels.fetch() default path failed: url=${fetchUrl}, count=${fetched.length}`);
+  }
+
+} catch (e) {
+  fail(`levels provider tests crashed: ${e.message}`);
+}
+
 // ── 12. TRACKER REPORT LINK NORMALIZATION (#760) ────────────────
 
 console.log('\n12. Tracker report-link normalization');
