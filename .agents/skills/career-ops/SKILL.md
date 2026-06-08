@@ -54,6 +54,7 @@ Available commands:
   /career-ops oferta    → Evaluation only A-F (no auto PDF)
   /career-ops ofertas   → Compare and rank multiple offers
   /career-ops contacto  → LinkedIn power move: find contacts + draft message
+                          (one role, or batch: `contacto top5`, `contacto >=4.0`, `contacto 156 158`)
   /career-ops deep      → Deep research prompt about company
   /career-ops interview-prep → Generate company-specific interview prep doc
   /career-ops pdf       → PDF only, ATS-optimized CV
@@ -88,17 +89,64 @@ Read `modes/{mode}.md`
 
 Applies to: `tracker`, `deep`, `interview-prep`, `training`, `project`, `patterns`, `followup`, `clean`
 
-### Modes delegated to subagent:
+---
+
+## Platform Detection & Execution Strategy
+
+**Detect calling platform:**
+
+1. **Is Agent tool available?**
+   - YES → Running in Claude Code (has Agent, Playwright, full tool suite)
+   - NO → Running in Codex, OpenCode, Gemini, or other platform (direct mode execution)
+
+**By Platform:**
+
+### Claude Code (Agent tool available)
+- **Complex modes** (`scan`, `pipeline`): Delegate to subagent for parallel tool use + model optimization
+  - `scan` → use `model: "sonnet"`
+  - `pipeline` → use `model: "opus"`  # high-effort model (Opus 4.8): deeper, better-sourced JD analysis
+- **Simple modes**: Execute directly in main context
+
+### Other Platforms (Codex, OpenCode, Gemini, CLI agents)
+- **All modes**: Execute directly (no subagent delegation available)
+- **For `scan` in OpenCode specifically**: Execute `node scan-full.mjs` for zero-token scanning + Gmail alerts
+- **For other platforms**: Execute `node scan.mjs` (parsers + ATS APIs) or `modes/scan.md` logic directly
+
+---
+
+## Modes Delegated to Subagent (Claude Code Only)
+
+**ONLY if Agent tool is available:**
+
 For `scan`, `apply` (with Playwright), and `pipeline` (3+ URLs): launch as Agent with the content of `_shared.md` + `modes/{mode}.md` injected into the subagent prompt.
 
-**OpenCode scan rule:** when running in OpenCode, `/career-ops scan` MUST execute `node scan-full.mjs` instead of plain `node scan.mjs`. `scan-full.mjs` runs the zero-token scanner with Playwright verification and then checks Gmail alert emails for LinkedIn, Indeed, and Wellfound, matching the checks Claude Code's agent workflow performs.
+**Model selection by mode:**
+```
+scan mode:
+  Agent(
+    subagent_type="general-purpose",
+    model="sonnet",  # Claude Code: expensive model for discovery
+    prompt="[content of modes/_shared.md]\n\n[content of modes/scan.md]",
+    description="career-ops scan"
+  )
 
+pipeline mode:
+  Agent(
+    subagent_type="general-purpose",
+    model="opus",  # Opus 4.8 (high-effort): pipeline evaluations get deeper, better-sourced analysis
+    prompt="[content of modes/_shared.md]\n\n[content of modes/pipeline.md]",
+    description="career-ops pipeline"
+  )
 ```
-Agent(
-  subagent_type="general-purpose",
-  prompt="[content of modes/_shared.md]\n\n[content of modes/{mode}.md]\n\n[invocation-specific data]",
-  description="career-ops {mode}"
-)
+
+**Non-Claude Code execution (direct mode):**
 ```
+If Agent tool is NOT available:
+  Read modes/_shared.md + modes/{mode}.md
+  Execute the instructions from the loaded mode file directly
+  (no subagent, no model optimization, sequential execution)
+```
+
+**OpenCode scan rule:** when running in OpenCode, `/career-ops scan` MUST execute `node scan-full.mjs` instead of plain `node scan.mjs`. `scan-full.mjs` runs the zero-token scanner with Playwright verification and then checks Gmail alert emails for LinkedIn, Indeed, and Wellfound, matching the checks Claude Code's agent workflow performs.
 
 Execute the instructions from the loaded mode file.
