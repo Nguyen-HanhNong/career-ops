@@ -54,6 +54,7 @@ Available commands:
   /career-ops oferta    → Evaluation only A-F (no auto PDF)
   /career-ops ofertas   → Compare and rank multiple offers
   /career-ops contacto  → LinkedIn power move: find contacts + draft message
+                          (one role, or batch: `contacto top5`, `contacto >=4.0`, `contacto 156 158`)
   /career-ops deep      → Deep research prompt about company
   /career-ops interview-prep → Generate company-specific interview prep doc
   /career-ops pdf       → PDF only, ATS-optimized CV
