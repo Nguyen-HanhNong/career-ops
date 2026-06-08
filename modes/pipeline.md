@@ -16,11 +16,16 @@ Process job URLs stored in `data/pipeline.md`. The user adds URLs at any time an
 
    **Tuning it:** Generating a tailored PDF costs ~30–60s per entry (Playwright launch + HTML render) and produces files that often go unused — most roles score in the 2.x/3.x range and never reach the application stage. Raise `auto_pdf_score_threshold` (e.g. `4.0`) to write only the report for marginal offers and produce the PDF on demand via `/career-ops pdf {slug}`; set `0` to generate one for every offer. Both modes (Path A `/career-ops pipeline` and Path B `batch/batch-runner.sh`) read the same key, so behavior is identical regardless of which path processes an offer.
 3. **If there are 3+ pending URLs**, launch agents in parallel (Agent tool with `run_in_background`) to maximize speed.
-4. **At the end**, show summary table:
+4. **At the end**, show summary table with **MANDATORY report number** in first column:
 
 ```
 | # | Company | Role | Score | PDF | Recommended action |
+|---|---------|------|-------|-----|-------------------|
+| 156 | Google | Senior SWE | 4.2/5 | ✅ | Apply — strong match |
+| 157 | Acme Corp | PM | 3.1/5 | ❌ | Review — marginal fit |
 ```
+
+**CRITICAL:** The report number (`#`) MUST ALWAYS be in the first column of the summary. Sort by score descending so high-scoring roles appear first. This allows the user to quickly identify which reports to prioritize.
 
 ## Format of pipeline.md
 
