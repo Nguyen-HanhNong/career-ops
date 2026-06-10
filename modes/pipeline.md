@@ -47,7 +47,17 @@ Process job URLs stored in `data/pipeline.md`. The user adds URLs at any time an
 3. **WebSearch (last resort):** Search in secondary portals that index the JD.
 
 **Special cases:**
-- **LinkedIn**: May require login → mark `[!]` and ask the user to paste the text
+- **LinkedIn** (`linkedin.com/jobs/view/{jobId}`): the public page is behind a login wall, but the JD is almost always recoverable without it. **The guest endpoint is the primary source; WebSearch is only a fallback when it is blocked.** Resolve in this order:
+  1. **Guest endpoint (try FIRST):** `WebFetch https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{jobId}` — returns the JD HTML (title, company, location, description) plus its own status line without login for most postings.
+     - **If it returns a JD and does NOT say "No longer accepting applications" → that is sufficient to evaluate. Proceed straight to evaluation.** Do NOT require a separate canonical URL, and do NOT go hunting for one to "confirm" liveness — the guest endpoint's own status is authoritative for this posting.
+     - If it explicitly says **"No longer accepting applications"** / closed → mark `[!]` "posting closed" and skip (do not consume a report number).
+     - If it is rate-limited/blocked (429/999) or returns no JD → go to step 2.
+  2. **Fallback — WebSearch for the canonical posting** (only when step 1 gave no JD): `WebSearch "{company}" "{role}" careers` (plus an ATS variant: `{company} {role} {location} greenhouse OR lever OR ashby OR workday`). Prefer the company's own careers domain or its ATS. Take the result matching this exact role and verify live with Playwright (sequential — never 2+ Playwright ops in parallel).
+  3. **URL & verification in the report:**
+     - If you have a verified canonical company/ATS posting (from step 1's optional enrichment or step 2), use that URL in the report and tracker — it gives a real apply link.
+     - If you only have the guest-endpoint JD, use the LinkedIn URL and add `**Verification:** guest-endpoint only` to the report header. **A guest-endpoint-only JD is a valid basis for a full A–F evaluation — never drop a live posting just because no canonical URL was found.**
+     - **Do not trust a separately-resolved canonical req's "closed/filled" status over the guest endpoint's own liveness** — WebSearch frequently matches a *different, older* req at the same company. When they disagree, the guest endpoint (which is the exact posting from the inbox) wins.
+  4. Only mark `[!]` "no JD found — paste manually" if the guest endpoint is blocked AND WebSearch finds no live canonical posting (common for staffing agencies and tiny generic shops). The same guest-endpoint→WebSearch flow applies to Indeed alert items (see `modes/scan.md` Level 4).
 - **PDF**: If the URL points to a PDF, read it directly with the Read tool
 - **`local:` prefix**: Read the local file. Example: `local:jds/linkedin-pm-ai.md` → read `jds/linkedin-pm-ai.md`
 
