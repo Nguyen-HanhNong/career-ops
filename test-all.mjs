@@ -1120,6 +1120,110 @@ try {
     fail(`levels.fetch() default path failed: url=${fetchUrl}, count=${fetched.length}`);
   }
 
+  // ── SEARCH mode ──
+  const lv = await import(pathToFileURL(join(ROOT, 'providers/levels.mjs')).href);
+
+  // hasLevelsSearchFilters: real filters vs legacy url-only vs empty
+  if (lv.hasLevelsSearchFilters({ locations: ['new-york-city-area'] }) === true &&
+      lv.hasLevelsSearchFilters({ url: 'https://www.levels.fyi/jobs' }) === false &&
+      lv.hasLevelsSearchFilters({}) === false &&
+      lv.hasLevelsSearchFilters(null) === false) {
+    pass('hasLevelsSearchFilters distinguishes filters from legacy url/empty');
+  } else {
+    fail('hasLevelsSearchFilters misclassified a config');
+  }
+
+  // buildLevelsPaths: cartesian product, location/level/title order, slug validation
+  const paths = lv.buildLevelsPaths({
+    titles: ['software-engineer'],
+    locations: ['new-york-city-area', 'greater-seattle-area'],
+    levels: ['entry', 'mid_staff'],
+  });
+  if (paths.length === 4 &&
+      paths.includes('https://www.levels.fyi/jobs/location/new-york-city-area/level/entry/title/software-engineer') &&
+      paths.includes('https://www.levels.fyi/jobs/location/greater-seattle-area/level/mid_staff/title/software-engineer')) {
+    pass('buildLevelsPaths fans out locations x levels x titles in path order');
+  } else {
+    fail(`buildLevelsPaths produced ${JSON.stringify(paths)}`);
+  }
+
+  if (lv.buildLevelsPaths({ locations: ['new-york-city-area', 'Bad Slug!', '../etc'] }).length === 1) {
+    pass('buildLevelsPaths drops invalid slugs');
+  } else {
+    fail('buildLevelsPaths should reject non-slug values');
+  }
+
+  if (JSON.stringify(lv.buildLevelsPaths({ levels: ['entry'] })) === JSON.stringify(['https://www.levels.fyi/jobs/level/entry'])) {
+    pass('buildLevelsPaths omits empty dimensions');
+  } else {
+    fail('buildLevelsPaths should omit absent path segments');
+  }
+
+  // parseLevelsSearchData: flatten __NEXT_DATA__ results[].jobs[]
+  const recentISO = new Date().toISOString();
+  const oldISO = new Date(Date.now() - 30 * 86_400_000).toISOString();
+  const nextData = { props: { pageProps: { initialJobsData: { results: [
+    { companyName: 'Acme', jobs: [
+      { id: 1, title: 'Software Engineer', locations: ['New York, NY'], minTotalSalary: 260000, minBaseSalary: 180000, postingDate: recentISO, applicationUrl: 'https://boards.greenhouse.io/acme/1' },
+      { id: 2, title: 'Junior Dev', locations: ['New York, NY'], minTotalSalary: 150000, minBaseSalary: 100000, postingDate: recentISO },
+    ] },
+    { companyName: 'Beta', jobs: [
+      { id: 3, title: 'Staff Engineer', locations: ['SF', 'Remote'], minTotalSalary: 300000, minBaseSalary: 200000, postingDate: oldISO },
+      { id: 0, title: '', locations: [] },
+    ] },
+  ] } } } };
+  const parsed = lv.parseLevelsSearchData(nextData);
+  if (parsed.length === 3 && parsed[0].company === 'Acme' && parsed[0].minTotalSalary === 260000 && parsed[2].locations.length === 2) {
+    pass('parseLevelsSearchData flattens companies x jobs and drops blanks');
+  } else {
+    fail(`parseLevelsSearchData returned ${JSON.stringify(parsed)}`);
+  }
+
+  if (lv.parseLevelsSearchData({}).length === 0 && lv.parseLevelsSearchData(null).length === 0) {
+    pass('parseLevelsSearchData handles missing data');
+  } else {
+    fail('parseLevelsSearchData should return [] when results absent');
+  }
+
+  // filterLevelsJobs: comp / base / recency + url building + dedup
+  const filtered = lv.filterLevelsJobs(parsed, { min_total_comp: 200000, min_base_salary: 120000, posted_within_days: 7 });
+  if (filtered.length === 1 && filtered[0].title === 'Software Engineer' &&
+      filtered[0].url === 'https://www.levels.fyi/jobs?jobId=1' &&
+      filtered[0].location === 'New York, NY') {
+    pass('filterLevelsJobs applies comp/base/recency and builds canonical url');
+  } else {
+    fail(`filterLevelsJobs returned ${JSON.stringify(filtered)}`);
+  }
+
+  // unknown salary/date values are kept (missing data not penalized)
+  const keptUnknown = lv.filterLevelsJobs(
+    [{ id: '9', title: 'X', company: 'C', locations: [], minTotalSalary: null, minBaseSalary: null, postingDate: null }],
+    { min_total_comp: 200000, posted_within_days: 1 },
+  );
+  if (keptUnknown.length === 1) {
+    pass('filterLevelsJobs keeps jobs with unknown salary/date');
+  } else {
+    fail('filterLevelsJobs should not drop jobs lacking salary/date data');
+  }
+
+  // SEARCH-mode fetch end to end against a mocked transport
+  const calledUrls = [];
+  const searchFetched = await lv.default.fetch(
+    { name: 'Levels search', levels_search: { titles: ['software-engineer'], locations: ['new-york-city-area'], min_total_comp: 200000, min_base_salary: 120000, posted_within_days: 7 } },
+    {
+      transport: 'http',
+      fetchText: async (url) => { calledUrls.push(url); return `<html><body><script id="__NEXT_DATA__" type="application/json">${JSON.stringify(nextData)}</script></body></html>`; },
+      fetchJson: async () => { throw new Error('fetchJson should not be called'); },
+    },
+  );
+  if (calledUrls.length === 1 &&
+      calledUrls[0] === 'https://www.levels.fyi/jobs/location/new-york-city-area/title/software-engineer' &&
+      searchFetched.length === 1 && searchFetched[0].url === 'https://www.levels.fyi/jobs?jobId=1') {
+    pass('levels.fetch() SEARCH mode fetches path URL and returns filtered jobs');
+  } else {
+    fail(`levels SEARCH fetch: urls=${JSON.stringify(calledUrls)}, jobs=${JSON.stringify(searchFetched)}`);
+  }
+
 } catch (e) {
   fail(`levels provider tests crashed: ${e.message}`);
 }

@@ -115,6 +115,20 @@ Durante el scan del agente, mantener en memoria el conjunto **`local_parser_ok`*
 
 **Cada empresa DEBE tener `careers_url` en portals.yml.** Si no la tiene, buscarla una vez, guardarla, y usar en futuros scans.
 
+### Nivel 1b — Levels.fyi: cobertura exhaustiva (opt-in, agente Playwright)
+
+El provider zero-token `levels` (Nivel 0) devuelve solo la **primera página** (~5 empresas × 3 jobs) por cada combinación de filtros, porque la paginación completa de Levels.fyi está detrás de una **API cifrada** (`/v1/job/search` devuelve un payload cifrado y responde 402 sin headers de navegador). Para cobertura **exhaustiva** (todos los jobs que matchean, no solo la página 1), el agente puede paginar la UI renderizada con Playwright — el navegador descifra los resultados en cliente, así que el DOM muestra todas las páginas.
+
+**Esto es opt-in y costoso en tokens** (cada página es un `browser_snapshot` que entra al contexto). Hacerlo SOLO cuando el usuario pide explícitamente un barrido exhaustivo de Levels, **nunca en cada scan**. El scan diario por defecto usa el provider zero-token (`node scan.mjs`), que NO consume tokens; reservá el Playwright para barridos puntuales.
+
+Cuando se pida cobertura exhaustiva de Levels, por cada combinación `locations × levels × titles` de `portals.yml → levels_search`:
+1. `browser_navigate` a la URL filtrada por path: `https://www.levels.fyi/jobs/location/{loc}/level/{lvl}/title/{title}` (omitir segmentos ausentes).
+2. `browser_snapshot`; extraer cada job card (título, empresa, ubicación, URL `/jobs?jobId=...`).
+3. Click en el control de página siguiente (paginación 1..N al final) y repetir hasta agotar páginas o un tope razonable (p. ej. 10 páginas / combo).
+4. Aplicar los filtros in-provider (`min_total_comp`, `min_base_salary`, `posted_within_days`) contra el salario/fecha visibles, y deduplicar contra `scan-history.tsv` / `applications.md` / `pipeline.md` como siempre.
+
+**NUNCA** correr 2+ operaciones Playwright en paralelo (un solo navegador). Esta nota aplica a Levels.fyi específicamente; para `tracked_companies` normales seguí el Nivel 1 de abajo.
+
 ### Nivel 2 — ATS APIs / Feeds (COMPLEMENTARIO)
 
 Para empresas con API pública o feed estructurado **que no estén en `local_parser_ok`**, usar la respuesta JSON/XML como complemento rápido de Nivel 1. Es más rápido que Playwright y reduce errores de scraping visual.
