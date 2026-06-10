@@ -1,0 +1,298 @@
+%-------------------------
+% Resume in Latex
+% Author : Nguyen-Hanh Nong
+% License: MIT
+%------------------------
+
+\documentclass[letterpaper,11pt,usenames,dvipsnames]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage{xcolor, soul}  
+\usepackage[export]{adjustbox}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\usepackage{titlesec}
+\usepackage{fontawesome}
+\usepackage{hyperref}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern} % Modern font with better ATS parsing
+\usepackage{pdfx}    % Ensures PDF/A compliance for better text extraction
+\usepackage[left=0.8in, right=0.9in, top=1in]{geometry}
+
+\input{glyphtounicode}
+
+%----------FONT OPTIONS----------
+% sans-serif
+% \usepackage[sfdefault]{FiraSans}
+% \usepackage[sfdefault]{roboto}
+% \usepackage[sfdefault]{noto-sans}
+% \usepackage[default]{sourcesanspro}
+
+% serif
+% \usepackage{CormorantGaramond}
+% \usepackage{charter}
+
+
+\pagestyle{fancy}
+\fancyhf{} % clear all header and footer fields
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{-1pt}
+
+% Adjust margins
+\addtolength{\oddsidemargin}{-0.7in}
+\addtolength{\evensidemargin}{-1in}
+
+% Adjust the width 
+\addtolength{\textwidth}{1.55in}
+\addtolength{\topmargin}{-1.1in}
+\addtolength{\textheight}{10in}
+\headsep=10pt
+
+\urlstyle{same}
+
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+\setlength{\textheight}{770pt}
+
+% Ensure that generate pdf is machine readable/ATS parsable
+\pdfgentounicode=1
+ \renewcommand{\familydefault}{\sfdefault}
+
+% Formatting the \section tag to be custom
+\titleformat{\section}
+{\normalfont\sffamily\fontsize{13}{13}\bfseries\color{cyan}}
+{}{0.05em}{}
+
+\pagecolor{white}  
+
+% Spacing for sections
+\titlespacing\section{0pt}{-2pt}{0pt}
+\titlespacing\subsection{0pt}{-1t plus 0pt minus 1pt}{0pt plus 2pt minus 2pt}
+\titlespacing\subsubsection{0pt}{0pt plus 0pt minus 2pt}{0pt plus 2pt minus 2pt}
+
+%-------------------------
+% Custom commands
+
+% Redefine \large to your custom size (e.g., 14pt font with 16pt baseline)
+\renewcommand{\large}{\fontsize{14}{14}\selectfont}
+
+\newcommand{\resumeItem}[1]{
+  \item\small{
+    {#1 \vspace{-2.41pt}}
+  }
+}
+
+\newcommand{\availabilityresumeItem}[1]{
+  \item\small{
+    {#1 \vspace{-7.9pt}}
+  }
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-1.5pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4 } \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeSubSubheading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \textit{\small#1} & \textit{\small #2} \\
+    \end{tabular*}\vspace{-3pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeSubItem}[1]{\resumeItem{#1}\vspace{-5pt}}
+
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}[leftmargin=0.15in]}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-7pt}}
+
+\newcommand{\resumeAvailabilityItemListStart}{\resumeItemListStart}
+\newcommand{\resumeAvalabilityItemListEnd}{\resumeItemListEnd\vspace{8.63pt}}
+
+
+% Create variable for dynamically updating location
+% Define a variable with default text
+% \def\location{Vancouver, Canada}
+% \def\location{Toronto, Ontario, Canada}
+% \def\location{Montreal, Quebec, Canada}
+% \def\location{Ottawa, Ontario, Canada}
+
+
+%-------------------------------------------
+%%%%%%  RESUME STARTS HERE  %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+\begin{document}
+    
+%----------HEADING----------
+\begin{center}
+\textbf{\large Nguyen-Hanh Nong} \\
+\small 343-204-4026 $|$ nongnguyenhanh@gmail.com $|$ {linkedin.com/in/nguyen-hanh-nong} $|$ {github.com/Nguyen-HanhNong} $|$ \location % Location dynamically inserted here
+\end{center}
+
+%-----------PROGRAMMING SKILLS-----------
+\section{Technical Skills}
+
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+        \textbf{Programming Languages:}{ Python, Java, JavaScript, TypeScript, C++, C, Go, Rust, HTML/CSS} \\
+        \textbf{Frameworks \& Libraries:}{ React, Next.js, Node.js, Spring Boot, Hibernate, Django, Express.js, Electron, ASP.NET} \\
+        \textbf{Machine Learning \& Data:}{ TensorFlow, scikit-learn, Pandas, NumPy, LangChain} \\
+        \textbf{Developer Tools \& Platforms:}{ Git, GitHub, GitLab, Docker, Kubernetes, Apache Maven, Swagger, Kafka, K9s, Elasticsearch} \\
+        \textbf{Databases \& Cloud:}{ SQL, MySQL, PostgreSQL, MongoDB, SQLite, DynamoDB, Amazon S3}
+    }}
+ \end{itemize}
+%-------------------------------------------
+
+%-----------EXPERIENCE-----------
+\section{Experience}
+  \resumeSubHeadingListStart
+
+    \resumeSubheading
+      {Tesla}{September 2025 - December 2025}
+      {Software Engineer Intern}{Fremont, California}
+      \resumeItemListStart
+        \resumeItem{Built an \textbf{LLM-driven} log-summarization pipeline (\textbf{Python}, \textbf{OpenAI}, \textbf{Apache Airflow}) for manufacturing systems that reduced manual triage time by \textbf{20\%}, processed $\sim$1M log lines/day, and surfaced anomalies earlier.}
+        \resumeItem{Productionized an existing \textbf{Kubeflow} multivariate-correlation pipeline by developing a \textbf{Go} orchestration API that handles execution, status feedback, and publishing human-readable reports to \textbf{Amazon S3}, enabling self-serve analysis for engineers.}
+        \resumeItem{Built read-optimized \textbf{Go} endpoints with \textbf{SQL} for correlation insights and time-series metrics, achieving \textbf{p95 $<$ 100 ms} latency and cutting ad-hoc data requests from operations.}
+        \resumeItem{Created graphical visualizations with \textbf{Matplotlib}, \textbf{NumPy}, and \textbf{Pandas} to dynamically trace a component's location history across its manufacturing lifecycle, enabling faster triage and clearer end-to-end understanding.}
+        % \resumeItem{Orchestrated daily statistical workflows in \textbf{Apache Airflow} with \textbf{SQL} models for yield/defect KPIs, standardizing reporting across lines and improving data freshness.}
+      \resumeItemListEnd
+    
+
+    \resumeSubheading
+        {Amazon Web Services}{May 2025 - August 2025}
+        {Software Developer Intern}{Toronto, Ontario}
+         \resumeItemListStart
+            \resumeItem{Designed and implemented an \textbf{account registration system for AWS Partner} users by building RESTful APIs with \textbf{Java, Spring Boot, EC2, and DynamoDB}, enabling seamless partner onboarding at scale.}
+            \resumeItem{Built a \textbf{frontend portal} for the registration system using \textbf{TypeScript, React, and Next.js}, giving partners a streamlined interface to manage onboarding and account access.}
+            \resumeItem{Engineered a custom article ingestion pipeline leveraging \textbf{AWS EventBridge, Python, and Amazon S3} to convert \textbf{Salesforce documents into HTML articles}, reducing ingestion time and improving content distribution for internal webpages.}
+            \resumeItem{Enhanced \textbf{system reliability and observability} across both the registration system and ingestion pipeline by \textbf{integrating CloudWatch dashboards and alarms}, which enabled proactive issue detection and \textbf{reduced customer tickets by 10\%.}}
+            \resumeItem{Streamlined delivery of both services by \textbf{containerizing applications with Docker} and automating deployments via \textbf{AWS CodePipeline and CloudFormation}, cutting manual release effort and accelerating feature rollout.}
+        \resumeItemListEnd
+  
+    \resumeSubheading
+        {Cisco}{January 2025 - April 2025}
+        {Software Engineer Intern}{Ottawa, Ontario}
+         \resumeItemListStart
+            \resumeItem{Designed and deployed a \textbf{CLI-based telemetry performance visualization tool} for \textbf{gRPC and NETCONF} subscriptions, \textbf{streamlining CPU and RAM monitoring} and enabling faster debugging of network issues.}
+            \resumeItem{Developed a \textbf{real-time process monitoring system in C} that automatically detects and terminates memory leaks and high-CPU processes, \textbf{reducing overall memory usage by 20\%} and improving system stability.}
+            \resumeItem{Extended \textbf{performance visibility to the developer workflow} by building an \textbf{automated dashboard with Java, Grafana, and Kafka} to track daily build changes,\textbf{ accelerating the detection of breaking commits and reducing debugging time} for development teams.}
+        \resumeItemListEnd
+    
+    \resumeSubheading
+        {Qualcomm}{May 2024 - August 2024}
+        {Software Engineer Intern}{Toronto, Ontario}
+         \resumeItemListStart
+            \resumeItem{Led development of a \textbf{full-stack desktop color calibration tool} using \textbf{Electron, TypeScript, and React}, allowing users to fine-tune display properties (hue, saturation, brightness) and successfully deployed to \textbf{500+ clients.}}
+            \resumeItem{Designed and implemented \textbf{backend services with C\# and ASP.NET}, integrating \textbf{native C++ drivers for color calibration}, which reduced processing latency by 50\%.}
+            \resumeItem{Implemented a \textbf{CI/CD pipeline for ASP.NET APIs using Swagger, NUnit, and Jenkins}, improving test coverage and ensuring reliable daily builds with automated code quality reporting.}
+            \resumeItem{Engineered a \textbf{cross-platform Python SDK to extract display color and hardware data from Android devices}, replacing a DLL-based solution and significantly improving OS compatibility and scalability.}
+        \resumeItemListEnd
+    
+    \resumeSubheading
+      {Nokia}{May 2023 - August 2023}
+      {Software Developer Intern}{Ottawa, Ontario}
+          \resumeItemListStart
+            \resumeItem{Contributed to real-time software development in \textbf{Embedded C for Nokia’s SR OS}, improving \textbf{system performance, scalability, and hardware-level integration} in production environments.}
+            \resumeItem{Integrated \textbf{GitLab CI/CD with containerized Pytest suites on a Kubernetes cluster}, enabling \textbf{25+ parallel test runs} and dynamic scaling for faster regression coverage.}
+            \resumeItem{Applied \textbf{machine learning techniques in Python} using \textbf{scikit-learn and NumPy} to classify packet patterns and detect \textbf{anomalies in encrypted traffic flows}, improving validation efficiency and reducing reliance on manual inspection.}
+            % \resumeItem{Enhanced embedded driver functionality by r\textbf{efining C/C++ code for secure communications}, \textbf{enabling AES-512 encrypted interoperability} between Nokia routers and third-party devices.}
+            \resumeItemListEnd
+    
+  \resumeSubHeadingListEnd     
+
+%-----------PROJECTS-----------
+% \section{Projects}
+%     \resumeSubHeadingListStart
+        
+%        %  % AI Projects %
+%         \resumeProjectHeading
+%           {\textbf{Sentinel.AI} $|$ \textbf{Go, Python, SQLite, NumPy, Pandas, Scikit-learn, Tensorflow, Matplotlib}}{}
+%             \resumeItemListStart
+%                 \resumeItem{Built a \textbf{Counter-Strike 2} anti-cheat using \textbf{Python and Go}, integrating TensorFlow and Scikit-learn to analyze player gameplay data and \textbf{classify cheating behavior} from player actions and statistics.}
+%                 \resumeItem{Leveraged \textbf{Go’s concurrency model} to scrape and process \textbf{large volumes of player telemetry}, reducing data retrieval time by 40\%.}
+%                 \resumeItem{Designed a \textbf{scalable SQLite datastore} with \textbf{NumPy/Pandas preprocessing}, streamlining dataset integration for ML training and validation.}
+%             \resumeItemListEnd
+
+%        %  % Web Projects %
+%         \resumeProjectHeading
+%           {\textbf{Carleton Computer Science Question Repository} $|$ \textbf{TypeScript, React, Next.js, Node.js, MathJax, Axios, TailwindCSS}}{}
+%             \resumeItemListStart
+%                 \resumeItem{Co-developed an \textbf{open-source learning platform} adopted by \textbf{2,000+ students across 5 countries}, enabling faster exam preparation with interactive and responsive web tools.}
+%                 \resumeItem{Implemented \textbf{dynamic LaTeX rendering} with MathJax and interactive multiple-choice components in \textbf{React}, enhancing the study experience for algorithm and systems courses.}
+%                 \resumeItem{Built a \textbf{Next.js frontend with TailwindCSS} for fast, mobile-responsive pages and \textbf{optimized state management using Zustand}, \textbf{improving page load times by 50\%} compared to legacy frameworks.}
+%             \resumeItemListEnd
+
+%        % %  % Embedded Projects %
+%         \resumeProjectHeading
+%           {\textbf{AquilaHTTP} $|$ \textbf{C, epoll, POSIX Threads}}{}
+%           \resumeItemListStart
+%                 \resumeItem{Built a \textbf{multithreaded HTTP server in C} capable of\textbf{ handling 10,000+ concurrent connections} using epoll for non-blocking I/O.}
+%                 \resumeItem{Implemented core HTTP functionality, including request parsing, static file serving, and connection pooling, improving response throughput under load.}
+%                 \resumeItem{Optimized \textbf{concurrency model to achieve 3× higher throughput} compared to a traditional thread-per-connection server design.}
+%             \resumeItemListEnd
+
+       
+%         \resumeProjectHeading
+%           {\textbf{MemDB}  $|$ \textbf{C++, Boost, gRPC}}{}
+%           \resumeItemListStart
+%             \resumeItem{Designed and implemented a \textbf{high-performance in-memory database engine in C++} with \textbf{custom indexing and caching strategies}, enabling \textbf{millisecond-level query execution} across large datasets.}
+%             \resumeItem{Built a \textbf{gRPC interface to support distributed queries and client-server communication}, allowing seamless horizontal scalability across multiple nodes.}
+%             \resumeItem{Leveraged \textbf{Boost libraries and template metaprogramming} to optimize core data structures, \textbf{reducing memory overhead by 25\%} compared to standard implementations.}
+%           \resumeItemListEnd
+
+       
+%        \resumeProjectHeading
+%           {\textbf{StockSim}  $|$ \textbf{Java, Spring Boot, RabbitMQ, MySQL, Hibernate}}{}
+%             \resumeItemListStart
+%                 \resumeItem{Built a \textbf{stock trading simulation backend in Java with Spring Boot}, implementing order placement, portfolio management, and trade-matching logic for realistic exchange behavior.}
+%                 \resumeItem{Integrated\textbf{ RabbitMQ message queues to process buy/sell orders asynchronously}, improving system throughput and enabling scalable trade execution under heavy load.}
+%                 \resumeItem{Persisted \textbf{transactions and portfolio data in a normalized MySQL database with Hibernate ORM}, enabling efficient queries and detailed performance analytics.}
+%             \resumeItemListEnd
+       
+    % \resumeSubHeadingListEnd
+%-------------------------------------------
+
+
+%-----------EDUCATION-----------
+\section{Education}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {Carleton University}
+      {September 2021 - April 2026}
+      % {}
+      {Bachelor of Computer Science, Concentration in Artificial Intelligence and Machine Learning}{Ottawa, Ontario}
+      \resumeItemListStart
+        \resumeItem{\textbf{GPA: 4.0/4.0}}
+        % \resumeItem{Minor in Mathematics \& Psychology}
+    \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+
+
+\end{document}
+
+
