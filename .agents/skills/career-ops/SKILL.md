@@ -3,7 +3,7 @@ name: career-ops
 description: AI job search command center -- evaluate offers, generate CVs, scan portals, track applications
 arguments: mode # Claude Code specific
 user-invocable: true
-argument-hint: "[scan | deep | pdf | oferta | ofertas | apply | batch | tracker | pipeline | contacto | training | project | interview-prep | update | clean]"
+argument-hint: "[scan | deep | pdf | resume-judge | oferta | ofertas | apply | batch | tracker | pipeline | contacto | training | project | interview-prep | update | clean | clear]"
 license: MIT
 ---
 
@@ -23,6 +23,7 @@ Determine the mode from `$mode`:
 | `deep` | `deep` |
 | `interview-prep` | `interview-prep` |
 | `pdf` | `pdf` |
+| `resume-judge` | `resume-judge` |
 | `training` | `training` |
 | `project` | `project` |
 | `tracker` | `tracker` |
@@ -33,7 +34,8 @@ Determine the mode from `$mode`:
 | `patterns` | `patterns` |
 | `followup` | `followup` |
 | `update` | `update` |
-| `clean` | `clean` |
+| `clean` [`reports`\|`resumes`\|`all`] | `clean` (→ `modes/cleanup.md`) |
+| `clear` [`reports`\|`resumes`\|`all`] | `clean` (alias; → `modes/cleanup.md`, defaults to the `resumes` target) |
 
 **Auto-pipeline detection:** If `$mode` is not a known sub-command AND contains JD text (keywords: "responsibilities", "requirements", "qualifications", "about the role", "we're looking for", company name + role) or a URL to a JD, execute `auto-pipeline`.
 
@@ -58,6 +60,7 @@ Available commands:
   /career-ops deep      → Deep research prompt about company
   /career-ops interview-prep → Generate company-specific interview prep doc
   /career-ops pdf       → PDF only, ATS-optimized CV
+  /career-ops resume-judge → LLM-as-judge: score a tailored resume vs the JD + cv.md, then revise
   /career-ops training  → Evaluate course/cert against North Star
   /career-ops project   → Evaluate portfolio project idea
   /career-ops tracker   → Application status overview
@@ -68,6 +71,8 @@ Available commands:
   /career-ops followup  → Follow-up cadence tracker: flag overdue, generate drafts
   /career-ops update    → Update career-ops system files with diff preview + compat check
   /career-ops clean     → Delete old reports from reports/ (keeps today's only)
+                          (clean resumes → clear generated PDF/HTML CVs from output/; clean all → both)
+  /career-ops clear     → Clear generated resume PDFs/HTML from output/ (alias of `clean resumes`)
 
 Inbox: add URLs to data/pipeline.md → /career-ops pipeline
 Or paste a JD directly to run the full pipeline.
@@ -87,7 +92,7 @@ Applies to: `auto-pipeline`, `oferta`, `ofertas`, `pdf`, `contacto`, `apply`, `p
 ### Standalone modes (only their mode file):
 Read `modes/{mode}.md`
 
-Applies to: `tracker`, `deep`, `interview-prep`, `training`, `project`, `patterns`, `followup`, `clean`
+Applies to: `tracker`, `deep`, `interview-prep`, `training`, `project`, `patterns`, `followup`, `resume-judge`, `clean`/`clear` (both load `modes/cleanup.md`)
 
 ---
 
