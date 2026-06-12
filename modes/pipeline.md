@@ -4,6 +4,8 @@ Process job URLs stored in `data/pipeline.md`. The user adds URLs at any time an
 
 ## Workflow
 
+> **Discovery vs. evaluation:** This mode only *evaluates* URLs already sitting in `data/pipeline.md`. Finding new jobs — including pulling LinkedIn / Indeed / Wellfound **job-alert emails from Gmail** — is the `scan` mode's job (see `modes/scan.md`, Nivel 4). `scan` resolves each alert to a concrete URL and drops it into the "Pending" section; this mode then picks it up via the normal loop below, with no special-casing.
+
 1. **Read** `data/pipeline.md` → search for `- [ ]` items in the "Pending" section
 2. **For each pending URL**:
    a. Calculate the next sequential `REPORT_NUM` (read `reports/`, take the highest number + 1)
@@ -42,7 +44,7 @@ Process job URLs stored in `data/pipeline.md`. The user adds URLs at any time an
 3. **WebSearch (last resort):** Search in secondary portals that index the JD.
 
 **Special cases:**
-- **LinkedIn**: May require login → mark `[!]` and ask the user to paste the text
+- **LinkedIn**: A bare `linkedin.com/jobs/view/{id}` URL is login-walled. Run it through the LinkedIn resolution ladder — company ATS → guest endpoint → punt (documented in `modes/scan.md`, Nivel 4) — instead of evaluating the walled page directly. Only if every rung fails do you mark `[!]` and ask the user to paste the text.
 - **PDF**: If the URL points to a PDF, read it directly with the Read tool
 - **`local:` prefix**: Read the local file. Example: `local:jds/linkedin-pm-ai.md` → read `jds/linkedin-pm-ai.md`
 

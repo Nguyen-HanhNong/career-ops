@@ -71,6 +71,7 @@ const scripts = [
   { name: 'dedup-tracker.mjs', expectExit: 0 },
   { name: 'merge-tracker.mjs', expectExit: 0 },
   { name: 'analyze-patterns.mjs --self-test', expectExit: 0 },
+  { name: 'linkedin-alerts.mjs --self-test', expectExit: 0 },
   { name: 'update-system.mjs check', expectExit: 0 },
 ];
 
@@ -465,6 +466,106 @@ if (
   pass('portals example documents a generic local parser contract');
 } else {
   fail('portals example still points at a bundled Cohere parser');
+}
+
+// ── 9b. SCAN / PIPELINE ALERT-INGESTION CONTRACT ────────────────
+// Regression guard (#email-alerts): a doc-only merge must NOT silently drop
+// job-alert ingestion, nor blur the discovery/evaluation split. scan.md OWNS
+// discovery (incl. Gmail job-alert emails for LinkedIn + Indeed + Wellfound);
+// pipeline.md ONLY evaluates URLs already in data/pipeline.md. If you are
+// intentionally relocating this logic, update these assertions in the same PR.
+
+console.log('\n9b. Scan/pipeline alert-ingestion contract');
+
+const pipelineMode = fileExists('modes/pipeline.md') ? readFile('modes/pipeline.md') : '';
+
+// scan.md must keep the Nivel 4 email-alert level for all three sources.
+if (
+  scanMode.includes('Nivel 4') &&
+  scanMode.includes('LinkedIn') &&
+  scanMode.includes('Indeed') &&
+  scanMode.includes('Wellfound')
+) {
+  pass('scan.md keeps Nivel 4 email alerts for LinkedIn + Indeed + Wellfound');
+} else {
+  fail('scan.md lost the Nivel 4 email-alert level (LinkedIn/Indeed/Wellfound)');
+}
+
+// The actual Gmail senders must survive — that is what makes the level work.
+if (
+  scanMode.includes('jobalerts-noreply@linkedin.com') &&
+  scanMode.includes('jobalert@indeed.com') &&
+  scanMode.includes('noreply@wellfound.com')
+) {
+  pass('scan.md keeps the Gmail alert senders for all three sources');
+} else {
+  fail('scan.md dropped one or more Gmail alert senders (LinkedIn/Indeed/Wellfound)');
+}
+
+// LinkedIn two-hop resolution must stay intact (deterministic parser + guest endpoint).
+if (
+  scanMode.includes('linkedin-alerts.mjs') &&
+  scanMode.includes('jobs-guest') &&
+  scanMode.includes('allow_guest_endpoint')
+) {
+  pass('scan.md keeps the LinkedIn two-hop resolution (parser + guest endpoint)');
+} else {
+  fail('scan.md lost the LinkedIn two-hop resolution ladder');
+}
+
+// Indeed must NOT regress to the broken redirect links — keep the why documented.
+if (
+  scanMode.includes('quoted-printable') &&
+  scanMode.includes('Cloudflare') &&
+  scanMode.includes('indeed-alert')
+) {
+  pass('scan.md keeps the Indeed redirect-link guard (quoted-printable + Cloudflare)');
+} else {
+  fail('scan.md lost the Indeed redirect-link guard — risk of re-enabling broken /rc/clk/dl links');
+}
+
+// Wellfound resolves via its own clean listing URL.
+if (scanMode.includes('wellfound.com/jobs/') && scanMode.includes('wellfound-alert')) {
+  pass('scan.md keeps Wellfound direct-URL ingestion');
+} else {
+  fail('scan.md lost Wellfound direct-URL ingestion');
+}
+
+// Gmail MCP prerequisite must be checked so the level degrades gracefully.
+if (scanMode.includes('Gmail MCP') && scanMode.includes('list_labels')) {
+  pass('scan.md keeps the Gmail MCP prerequisite check');
+} else {
+  fail('scan.md lost the Gmail MCP prerequisite check');
+}
+
+// pipeline.md must NOT pull alerts itself — discovery belongs to scan.
+if (
+  !pipelineMode.includes('jobalerts-noreply@linkedin.com') &&
+  !pipelineMode.includes('jobalert@indeed.com') &&
+  !pipelineMode.includes('## Email job-alert ingestion')
+) {
+  pass('pipeline.md does not do Gmail discovery (stays evaluation-only)');
+} else {
+  fail('pipeline.md is doing Gmail discovery — that belongs in scan.md');
+}
+
+// pipeline.md must still know a bare LinkedIn URL is login-walled, and point to scan.
+if (pipelineMode.includes('login-walled') && pipelineMode.includes('scan.md')) {
+  pass('pipeline.md keeps LinkedIn login-wall handling and points to scan for discovery');
+} else {
+  fail('pipeline.md lost LinkedIn login-wall handling / the scan pointer');
+}
+
+// The config template must document all three sources so config matches implementation.
+if (
+  portalExample.includes('linkedin_alerts') &&
+  portalExample.includes('jobs-noreply@linkedin.com') &&
+  portalExample.includes('donotreply@jobalert.indeed.com') &&
+  portalExample.includes('noreply@wellfound.com')
+) {
+  pass('portals example documents linkedin_alerts sources for all three providers');
+} else {
+  fail('portals example lost the linkedin_alerts multi-source config');
 }
 
 // ── 10. AGENTS.md INTEGRITY ─────────────────────────────────────

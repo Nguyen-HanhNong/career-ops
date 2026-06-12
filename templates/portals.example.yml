@@ -21,6 +21,40 @@
 #   4. Adjust search_queries for your preferred job boards
 #   5. Set enabled: false on companies you don't care about
 
+# -- Job-alert ingestion (optional, OFF by default) --
+# Lets /career-ops scan pull job-alert emails out of your Gmail (via the
+# Gmail MCP) and resolve each one to the FULL job description. Covers three
+# sources via sources[] below:
+#   - LinkedIn: two hops — (0) read alert email -> jobId/company/role;
+#     (1) resolve to the company's own ATS posting first, falling back to
+#     LinkedIn's public guest endpoint. No LinkedIn account needed.
+#   - Wellfound: alert emails carry clean wellfound.com/jobs/{id} URLs — used
+#     directly, no resolution hop.
+#   - Indeed: redirect links are broken (quoted-printable mangling + Cloudflare),
+#     so the clean email metadata is resolved to the company's own posting via
+#     WebSearch. See modes/scan.md "Nivel 4 — Job Alert Emails".
+#
+# The block key stays `linkedin_alerts` for backward compatibility even though it
+# now covers all three sources. If absent, ingestion is treated as DISABLED
+# (pipeline only processes URLs already in data/pipeline.md).
+# Requires the Gmail MCP to be connected.
+
+# linkedin_alerts:
+#   enabled: true            # master switch (absent/false = ingestion off)
+#   lookback_days: 14        # how far back to search Gmail for alert emails
+#   prefer_ats: true         # Hop 1 Rung A — resolve to the company's own ATS first (cleanest)
+#   allow_guest_endpoint: true  # Hop 1 Rung B — fall back to LinkedIn's accountless
+#                               # guest endpoint when no ATS match (TOS gray-area; set
+#                               # false to ATS-only and punt-to-paste otherwise)
+#   processed_label_id: "Label_1"  # optional — Gmail label marking threads already read
+#   sources:                 # which alert senders to read (omit this list → LinkedIn only)
+#     - name: LinkedIn
+#       senders: [jobs-noreply@linkedin.com, jobalerts-noreply@linkedin.com]
+#     - name: Indeed
+#       senders: [donotreply@jobalert.indeed.com, jobalert@indeed.com]
+#     - name: Wellfound
+#       senders: [noreply@wellfound.com, notifications@wellfound.com, team@wellfound.com]
+
 # -- Location filter (optional) --
 # Filter scanned jobs by location. Applied AFTER title filter, BEFORE dedup.
 # If this entire block is absent, all locations pass (current default behavior).
