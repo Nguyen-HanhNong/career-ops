@@ -131,46 +131,19 @@ if (dupes === 0) ok('No exact duplicates found');
 // Markdown links resolve relative to the file that contains them, so report
 // links must resolve against the tracker's own directory (see #760). For the
 // transition we also accept legacy root-relative links: try the tracker dir
-// first, then fall back to the repo root.
-//
-// IMPORTANT: report files in reports/ are gitignored and intentionally
-// ephemeral — the `cleanup` mode deletes every report not from today, and a
-// fresh clone has none at all. So a *missing* report file is the expected
-// steady state for older entries and must NOT be a hard error (it would make
-// the health check fail permanently after the first cleanup). Instead:
-//   - ERROR only on a malformed link (wrong shape/path) — a real bug (e.g. typo)
-//   - summarize well-formed links whose file is simply absent as one warning
+// first, then fall back to the repo root before flagging a link broken.
 const TRACKER_DIR = dirname(APPS_FILE);
-// Accepted shape: optional ../ then reports/{digits}-{slug}.md
-const REPORT_LINK_SHAPE = /^(?:\.\.\/)?reports\/\d+-[^/]+\.md$/;
-// A 🧹 marker in the report cell means the cleanup mode intentionally removed
-// the file (see mark-cleaned-reports.mjs) — an acknowledged absence, not a gap.
-const CLEANED_MARKER = '🧹';
-let malformedLinks = 0;
-let cleanedMarked = 0;    // absent + marked 🧹 → acknowledged, silent
-let missingUnmarked = 0;  // absent + no marker → unexpected (e.g. failed generation)
+let brokenReports = 0;
 for (const e of entries) {
   const match = e.report.match(/\]\(([^)]+)\)/);
   if (!match) continue;
   const link = match[1];
-  if (existsSync(join(TRACKER_DIR, link)) || existsSync(join(CAREER_OPS, link))) continue;
-  // File not on disk: malformed link is a real bug; absent-but-well-formed is expected.
-  if (!REPORT_LINK_SHAPE.test(link)) {
-    error(`#${e.num}: Malformed report link: ${link}`);
-    malformedLinks++;
-  } else if (e.report.includes(CLEANED_MARKER)) {
-    cleanedMarked++;
-  } else {
-    missingUnmarked++;
+  if (!existsSync(join(TRACKER_DIR, link)) && !existsSync(join(CAREER_OPS, link))) {
+    error(`#${e.num}: Report not found: ${link}`);
+    brokenReports++;
   }
 }
-if (malformedLinks === 0) ok('All report links well-formed');
-if (cleanedMarked > 0) {
-  ok(`${cleanedMarked} report(s) marked cleaned (🧹) — acknowledged, files intentionally removed`);
-}
-if (missingUnmarked > 0) {
-  warn(`${missingUnmarked} report file(s) referenced but not on disk and not marked cleaned — run 'node mark-cleaned-reports.mjs' to annotate (or regenerate)`);
-}
+if (brokenReports === 0) ok('All report links valid');
 
 // --- Check 4: Score format ---
 let badScores = 0;

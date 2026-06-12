@@ -136,6 +136,128 @@ try {
   } else {
     fail(`Closed mycareersfuture posting misclassified as ${closedMycareersfuture.result}`);
   }
+
+  const cloudflareChallenge = classifyLiveness({
+    status: 403,
+    finalUrl: 'https://www.pracuj.pl/praca/sap-consultant,oferta,1004870954',
+    bodyText: 'www.pracuj.pl\nJust a moment...\nPerforming security verification\nThis website uses a security service to protect against malicious bots.\nRay ID: a06489bab8bc4cd7\nPerformance and Security by Cloudflare',
+    applyControls: [],
+  });
+  if (cloudflareChallenge.result === 'uncertain' && cloudflareChallenge.code === 'bot_challenge') {
+    pass('Cloudflare anti-bot challenge pages are uncertain, not expired');
+  } else {
+    fail(`Cloudflare challenge misclassified as ${cloudflareChallenge.result} (${cloudflareChallenge.code})`);
+  }
+
+  const blocked403 = classifyLiveness({
+    status: 403,
+    finalUrl: 'https://www.pracuj.pl/praca/sap-consultant,oferta,1004870954',
+    bodyText: 'Access denied',
+    applyControls: [],
+  });
+  if (blocked403.result === 'uncertain' && blocked403.code === 'access_blocked') {
+    pass('HTTP 403 is treated as access-blocked (uncertain), not expired');
+  } else {
+    fail(`HTTP 403 misclassified as ${blocked403.result} (${blocked403.code})`);
+  }
+
+  const activePolishPosting = classifyLiveness({
+    status: 200,
+    finalUrl: 'https://www.pracuj.pl/praca/administrator-sap-utilities-warszawa,oferta,1004870954',
+    bodyText: 'Administrator SAP Utilities. Connectis_. Siedziba firmy: Chmielna 71, Warszawa. '.repeat(6),
+    applyControls: ['Aplikuj Aplikuj na ogłoszenie'],
+  });
+  if (activePolishPosting.result === 'active') {
+    pass('Polish "Aplikuj" apply control marks a loaded posting active');
+  } else {
+    fail(`Polish apply control not recognized: ${activePolishPosting.result} (${activePolishPosting.code})`);
+  }
+
+  // Headed-fallback-on-challenge path (liveness-browser.mjs). Fake Playwright
+  // pages script the goto/evaluate calls so we can exercise the wrapper without
+  // launching a browser. checkUrlLiveness reads body text first, apply controls
+  // second — the fake returns them in that order.
+  const { checkUrlLivenessWithFallback, isChallengeResult, jitteredDelayMs } =
+    await import(pathToFileURL(join(ROOT, 'liveness-browser.mjs')).href);
+
+  const disabled = jitteredDelayMs(0) === 0 && jitteredDelayMs(-1) === 0;
+  let inRange = true;
+  for (let i = 0; i < 200; i += 1) {
+    const d = jitteredDelayMs(5000);
+    if (d < 5000 || d >= 10000) { inRange = false; break; }
+  }
+  if (disabled && inRange) {
+    pass('jitteredDelayMs returns 0 when disabled and stays in [base, 2*base)');
+  } else {
+    fail(`jitteredDelayMs out of spec (disabled=${disabled}, inRange=${inRange})`);
+  }
+
+  const fakePage = ({ status, finalUrl, bodyText, applyControls }) => {
+    let evalCall = 0;
+    return {
+      async goto() { return { status: () => status }; },
+      async waitForTimeout() {},
+      url() { return finalUrl; },
+      async evaluate() { evalCall += 1; return evalCall === 1 ? bodyText : applyControls; },
+    };
+  };
+  const URL = 'https://www.pracuj.pl/praca/sap-consultant,oferta,1004870954';
+  const challengePage = () => fakePage({
+    status: 403,
+    finalUrl: URL,
+    bodyText: 'Just a moment... Performing security verification. Ray ID: abc123. Cloudflare.',
+    applyControls: [],
+  });
+  const livePage = () => fakePage({
+    status: 200,
+    finalUrl: URL,
+    bodyText: 'Administrator SAP Utilities. '.repeat(20),
+    applyControls: ['Apply for this job'],
+  });
+
+  if (isChallengeResult({ result: 'uncertain', code: 'bot_challenge' }) &&
+      isChallengeResult({ result: 'uncertain', code: 'access_blocked' }) &&
+      !isChallengeResult({ result: 'expired', code: 'http_gone' }) &&
+      !isChallengeResult({ result: 'active', code: 'apply_control_visible' })) {
+    pass('isChallengeResult flags only bot_challenge/access_blocked uncertains');
+  } else {
+    fail('isChallengeResult misclassified a result');
+  }
+
+  const fellBackToActive = await checkUrlLivenessWithFallback(challengePage(), URL, {
+    getHeadedPage: async () => livePage(),
+  });
+  if (fellBackToActive.result === 'active') {
+    pass('Headed fallback recovers a challenge-blocked page as active');
+  } else {
+    fail(`Headed fallback did not recover page: ${fellBackToActive.result} (${fellBackToActive.code})`);
+  }
+
+  const noProvider = await checkUrlLivenessWithFallback(challengePage(), URL, {});
+  if (noProvider.result === 'uncertain' && noProvider.code === 'bot_challenge') {
+    pass('No fallback provider keeps the original challenge result');
+  } else {
+    fail(`Missing provider changed result to ${noProvider.result} (${noProvider.code})`);
+  }
+
+  const stillBlocked = await checkUrlLivenessWithFallback(challengePage(), URL, {
+    getHeadedPage: async () => challengePage(),
+  });
+  if (stillBlocked.result === 'uncertain' && stillBlocked.code === 'bot_challenge'
+      && /headed retry also blocked/.test(stillBlocked.reason)) {
+    pass('Persistent challenge stays uncertain after headed retry (never upgraded to expired)');
+  } else {
+    fail(`Persistent challenge mishandled: ${stillBlocked.result} (${stillBlocked.code})`);
+  }
+
+  const noHeadedAvailable = await checkUrlLivenessWithFallback(challengePage(), URL, {
+    getHeadedPage: async () => null, // headed launch failed (no display)
+  });
+  if (noHeadedAvailable.result === 'uncertain' && noHeadedAvailable.code === 'bot_challenge') {
+    pass('Headless-only environment degrades to original challenge result');
+  } else {
+    fail(`No-display degrade path wrong: ${noHeadedAvailable.result} (${noHeadedAvailable.code})`);
+  }
 } catch (e) {
   fail(`Liveness classification tests crashed: ${e.message}`);
 }
@@ -144,21 +266,11 @@ try {
 
 if (!QUICK) {
   console.log('\n4. Dashboard build');
-  // The dashboard is an optional Go component. Only treat a build error as a
-  // failure when the Go toolchain is actually present — on a machine without Go
-  // (e.g. a docs-only contributor or this sandbox), skip with a warning rather
-  // than hard-failing the whole suite. CI has Go installed, so real compile
-  // breakage is still caught there.
-  const hasGo = run('command -v go') !== null;
-  if (!hasGo) {
-    warn('Dashboard build skipped — Go toolchain not installed (go not on PATH)');
+  const goBuild = run('cd dashboard && go build -o /tmp/career-dashboard-test . 2>&1');
+  if (goBuild !== null) {
+    pass('Dashboard compiles');
   } else {
-    const goBuild = run('cd dashboard && go build -o /tmp/career-dashboard-test . 2>&1');
-    if (goBuild !== null) {
-      pass('Dashboard compiles');
-    } else {
-      fail('Dashboard build failed');
-    }
+    fail('Dashboard build failed');
   }
 } else {
   console.log('\n4. Dashboard build (skipped --quick)');
@@ -379,7 +491,9 @@ for (const section of requiredSections) {
 console.log('\n11. Version file');
 
 if (fileExists('VERSION')) {
-  const version = readFile('VERSION').trim();
+  // VERSION may carry a release-please marker, e.g. "1.9.0 # x-release-please-version".
+  // Validate the first whitespace-delimited token, mirroring update-system.mjs parseVersionFile().
+  const version = readFile('VERSION').trim().split(/\s+/)[0];
   if (/^\d+\.\d+\.\d+$/.test(version)) {
     pass(`VERSION is valid semver: ${version}`);
   } else {
@@ -927,6 +1041,248 @@ try {
   fail(`smartrecruiters provider tests crashed: ${e.message}`);
 }
 
+// ── 13b. PROVIDERS — Workday ────────────────────────────────────────
+
+console.log('\n13b. Provider — workday');
+
+try {
+  const wd = (await import(pathToFileURL(join(ROOT, 'providers/workday.mjs')).href)).default;
+  const { parseWorkdayResponse, resolveWorkday } = await import(pathToFileURL(join(ROOT, 'providers/workday.mjs')).href);
+
+  if (wd.id === 'workday') pass('workday.id is "workday"');
+  else fail(`workday.id is ${JSON.stringify(wd.id)}`);
+
+  // detect() from an explicit cxs api: URL
+  const hitApi = wd.detect({
+    name: 'Nvidia',
+    api: 'https://nvidia.wd5.myworkdayjobs.com/wday/cxs/nvidia/NVIDIAExternalCareerSite/jobs',
+  });
+  if (hitApi && hitApi.url === 'https://nvidia.wd5.myworkdayjobs.com/wday/cxs/nvidia/NVIDIAExternalCareerSite/jobs') {
+    pass('workday.detect() accepts an explicit cxs api: URL');
+  } else {
+    fail(`workday.detect(api) returned ${JSON.stringify(hitApi)}`);
+  }
+
+  // detect() derives the cxs endpoint from a public careers_url
+  const hitCareers = wd.detect({ name: 'Zoom', careers_url: 'https://zoom.wd5.myworkdayjobs.com/Zoom' });
+  if (hitCareers && hitCareers.url === 'https://zoom.wd5.myworkdayjobs.com/wday/cxs/zoom/Zoom/jobs') {
+    pass('workday.detect() derives cxs endpoint from a public careers_url');
+  } else {
+    fail(`workday.detect(careers) returned ${JSON.stringify(hitCareers)}`);
+  }
+
+  // detect() tolerates a leading locale segment (/en-US/<site>)
+  const hitLocale = resolveWorkday({ name: 'X', careers_url: 'https://acme.wd1.myworkdayjobs.com/en-US/External' });
+  if (hitLocale && hitLocale.apiUrl === 'https://acme.wd1.myworkdayjobs.com/wday/cxs/acme/External/jobs' && hitLocale.site === 'External') {
+    pass('workday.resolveWorkday() strips a leading locale segment');
+  } else {
+    fail(`resolveWorkday(locale) returned ${JSON.stringify(hitLocale)}`);
+  }
+
+  if (wd.detect({ name: 'X', careers_url: 'https://example.com/careers' }) === null) {
+    pass('workday.detect() returns null for non-Workday URLs');
+  } else {
+    fail('workday.detect() should return null for non-Workday URLs');
+  }
+
+  // SSRF: myworkdayjobs.com in the PATH (not host) must not be detected
+  if (wd.detect({ name: 'Spoof', careers_url: 'https://evil.example/x.myworkdayjobs.com/Site' }) === null) {
+    pass('workday.detect() rejects path-spoofed URLs');
+  } else {
+    fail('workday.detect() must NOT misdetect path-spoofed URLs');
+  }
+
+  // parseWorkdayResponse
+  const sample = {
+    total: 2,
+    jobPostings: [
+      { title: 'Senior AI Engineer', externalPath: '/job/Santa-Clara/Senior-AI-Engineer_JR1', locationsText: 'Santa Clara, CA' },
+      { title: 'Remote ML Engineer', externalPath: '/job/Remote/Remote-ML-Engineer_JR2', locationsText: 'US, Remote' },
+    ],
+  };
+  const wdJobs = parseWorkdayResponse(sample, { company: 'Nvidia', host: 'nvidia.wd5.myworkdayjobs.com', site: 'NVIDIAExternalCareerSite' });
+  if (wdJobs.length === 2) pass('parseWorkdayResponse extracts 2 jobs');
+  else fail(`parseWorkdayResponse returned ${wdJobs.length} jobs`);
+
+  if (wdJobs[0]?.url === 'https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite/job/Santa-Clara/Senior-AI-Engineer_JR1'
+      && wdJobs[0]?.location === 'Santa Clara, CA') {
+    pass('parseWorkdayResponse builds the public job URL from host + site + externalPath');
+  } else {
+    fail(`row 0 = ${JSON.stringify(wdJobs[0])}`);
+  }
+
+  // postings without a usable externalPath are skipped (no synthetic/garbage URL)
+  const noPath = parseWorkdayResponse(
+    { jobPostings: [{ title: 'No Path', locationsText: 'X' }, { title: 'Bad Path', externalPath: 'not-absolute' }] },
+    { company: 'X', host: 'x.wd1.myworkdayjobs.com', site: 'S' },
+  );
+  if (noPath.length === 0) pass('parseWorkdayResponse skips postings without an absolute externalPath');
+  else fail(`expected 0 jobs, got ${JSON.stringify(noPath)}`);
+
+  // Empty/malformed input safety
+  if (parseWorkdayResponse({}, { company: 'X', host: 'x.wd1.myworkdayjobs.com', site: 'S' }).length === 0) {
+    pass('parseWorkdayResponse: empty {} input → empty result');
+  } else {
+    fail('parseWorkdayResponse should yield empty result for {}');
+  }
+  if (parseWorkdayResponse({ jobPostings: 'nope' }, { company: 'X', host: 'x.wd1.myworkdayjobs.com', site: 'S' }).length === 0) {
+    pass('parseWorkdayResponse: non-array jobPostings → empty result (no crash)');
+  } else {
+    fail('parseWorkdayResponse should yield empty result for non-array jobPostings');
+  }
+
+  // Pagination + the Workday quirk: `total` is only reported on the FIRST page
+  // (offset 0); later pages echo total=0. The loop must NOT stop early on that —
+  // it terminates on a short/empty page instead. 50 jobs = 20 + 20 + 10.
+  let wdRequests = 0;
+  const wdPaged = await wd.fetch(
+    { name: 'PagedCo', api: 'https://paged.wd1.myworkdayjobs.com/wday/cxs/paged/Site/jobs' },
+    {
+      transport: 'http',
+      fetchText: async () => { throw new Error('fetchText should not be called'); },
+      fetchJson: async (url, opts) => {
+        wdRequests++;
+        if (opts?.method !== 'POST') throw new Error('workday must POST');
+        const offset = JSON.parse(opts.body).offset;
+        const count = offset >= 40 ? 10 : 20;  // 0→20, 20→20, 40→10 (short, stops)
+        return {
+          total: offset === 0 ? 5000 : 0,       // real total only on page 0
+          jobPostings: Array.from({ length: count }, (_, i) => ({
+            title: `Role ${offset + i}`,
+            externalPath: `/job/x/Role_${offset + i}`,
+            locationsText: 'Remote',
+          })),
+        };
+      },
+    },
+  );
+  if (wdRequests === 3 && wdPaged.length === 50) {
+    pass('workday.fetch() keeps paginating despite total=0 on later pages, stops on short page (3 pages → 50)');
+  } else {
+    fail(`workday pagination: requests=${wdRequests}, total=${wdPaged.length} (expected 3 / 50)`);
+  }
+
+} catch (e) {
+  fail(`workday provider tests crashed: ${e.message}`);
+}
+
+// ── 13c. PROVIDERS — Amazon ─────────────────────────────────────────
+
+console.log('\n13c. Provider — amazon');
+
+try {
+  const amz = (await import(pathToFileURL(join(ROOT, 'providers/amazon.mjs')).href)).default;
+  const { parseAmazonResponse, resolveAmazonSearchUrl } = await import(pathToFileURL(join(ROOT, 'providers/amazon.mjs')).href);
+
+  if (amz.id === 'amazon') pass('amazon.id is "amazon"');
+  else fail(`amazon.id is ${JSON.stringify(amz.id)}`);
+
+  // detect() from an explicit search.json api: URL
+  const hit = amz.detect({ name: 'Amazon', api: 'https://www.amazon.jobs/en/search.json?base_query=software+engineer&result_limit=100' });
+  if (hit && hit.url.includes('https://www.amazon.jobs/en/search.json')) {
+    pass('amazon.detect() accepts a search.json api: URL');
+  } else {
+    fail(`amazon.detect(api) returned ${JSON.stringify(hit)}`);
+  }
+
+  // non-search.json amazon URL → null
+  if (amz.detect({ name: 'X', api: 'https://www.amazon.jobs/en/jobs/123' }) === null) {
+    pass('amazon.detect() returns null for non-search.json amazon URLs');
+  } else {
+    fail('amazon.detect() should require the search.json endpoint');
+  }
+
+  if (amz.detect({ name: 'X', api: 'https://example.com/en/search.json' }) === null) {
+    pass('amazon.detect() returns null for non-Amazon hosts');
+  } else {
+    fail('amazon.detect() should reject non-Amazon hosts');
+  }
+
+  // SSRF: amazon.jobs in the PATH (not host) must not be detected
+  if (amz.detect({ name: 'Spoof', api: 'https://evil.example/www.amazon.jobs/en/search.json' }) === null) {
+    pass('amazon.detect() rejects path-spoofed URLs');
+  } else {
+    fail('amazon.detect() must NOT misdetect path-spoofed URLs');
+  }
+
+  // careers_url alone (no api) → not enough to scope the search → null
+  if (amz.detect({ name: 'X', careers_url: 'https://www.amazon.jobs' }) === null) {
+    pass('amazon.detect() returns null without an explicit search.json api:');
+  } else {
+    fail('amazon.detect() should require api: (careers_url alone is unscoped)');
+  }
+
+  // parseAmazonResponse
+  const sample = {
+    hits: 2,
+    jobs: [
+      { title: 'Software Engineer', job_path: '/en/jobs/3093439/software-engineer', location: 'US, WA, Seattle', normalized_location: 'Seattle, Washington, USA' },
+      { title: 'ML Scientist', job_path: '/en/jobs/10386857/ml-scientist', location: 'US, CA, SF' },
+    ],
+  };
+  const amzJobs = parseAmazonResponse(sample, 'Amazon');
+  if (amzJobs.length === 2) pass('parseAmazonResponse extracts 2 jobs');
+  else fail(`parseAmazonResponse returned ${amzJobs.length} jobs`);
+
+  if (amzJobs[0]?.url === 'https://www.amazon.jobs/en/jobs/3093439/software-engineer'
+      && amzJobs[0]?.location === 'Seattle, Washington, USA') {
+    pass('parseAmazonResponse builds public URL from job_path and prefers normalized_location');
+  } else {
+    fail(`row 0 = ${JSON.stringify(amzJobs[0])}`);
+  }
+
+  if (amzJobs[1]?.location === 'US, CA, SF') {
+    pass('parseAmazonResponse falls back to location when normalized_location is absent');
+  } else {
+    fail(`row 1 location = ${JSON.stringify(amzJobs[1]?.location)}`);
+  }
+
+  // postings without a usable job_path are skipped
+  const noPath = parseAmazonResponse({ jobs: [{ title: 'No Path' }, { title: 'Bad', job_path: 'relative' }] }, 'Amazon');
+  if (noPath.length === 0) pass('parseAmazonResponse skips postings without an absolute job_path');
+  else fail(`expected 0 jobs, got ${JSON.stringify(noPath)}`);
+
+  // Empty/malformed input safety
+  if (parseAmazonResponse({}, 'X').length === 0) pass('parseAmazonResponse: empty {} input → empty result');
+  else fail('parseAmazonResponse should yield empty result for {}');
+  if (parseAmazonResponse({ jobs: 'nope' }, 'X').length === 0) {
+    pass('parseAmazonResponse: non-array jobs → empty result (no crash)');
+  } else {
+    fail('parseAmazonResponse should yield empty result for non-array jobs');
+  }
+
+  // Pagination: loops by offset, stops on a short page; default result_limit applied
+  let amzRequests = 0;
+  const amzPaged = await amz.fetch(
+    { name: 'Amazon', api: 'https://www.amazon.jobs/en/search.json?base_query=swe&result_limit=100' },
+    {
+      transport: 'http',
+      fetchText: async () => { throw new Error('fetchText should not be called'); },
+      fetchJson: async (url) => {
+        amzRequests++;
+        const offset = parseInt(new URL(url).searchParams.get('offset') || '0', 10);
+        const count = offset >= 100 ? 40 : 100;  // 0→100, 100→40 (short, stops)
+        return {
+          hits: 140,
+          jobs: Array.from({ length: count }, (_, i) => ({
+            title: `Role ${offset + i}`,
+            job_path: `/en/jobs/${offset + i}/role`,
+            normalized_location: 'Seattle, Washington, USA',
+          })),
+        };
+      },
+    },
+  );
+  if (amzRequests === 2 && amzPaged.length === 140) {
+    pass('amazon.fetch() paginates by offset and stops on the short page (2 pages → 140)');
+  } else {
+    fail(`amazon pagination: requests=${amzRequests}, total=${amzPaged.length} (expected 2 / 140)`);
+  }
+
+} catch (e) {
+  fail(`amazon provider tests crashed: ${e.message}`);
+}
+
 // ── 14. PROVIDERS — Recruitee ───────────────────────────────────────
 
 console.log('\n14. Provider — recruitee');
@@ -1026,208 +1382,6 @@ try {
   fail(`recruitee provider tests crashed: ${e.message}`);
 }
 
-// ── 15. PROVIDERS — Levels.fyi ───────────────────────────────────────
-
-console.log('\n15. Provider — levels');
-
-try {
-  const levels = (await import(pathToFileURL(join(ROOT, 'providers/levels.mjs')).href)).default;
-  const { parseLevelsJobsHtml } = await import(pathToFileURL(join(ROOT, 'providers/levels.mjs')).href);
-
-  if (levels.id === 'levels') pass('levels.id is "levels"');
-  else fail(`levels.id is ${JSON.stringify(levels.id)}`);
-
-  const hit = levels.detect({ name: 'Levels', careers_url: 'https://www.levels.fyi/jobs?jobId=123' });
-  if (hit && hit.url === 'https://www.levels.fyi/jobs') {
-    pass('levels.detect() resolves /jobs and strips selected jobId');
-  } else {
-    fail(`levels.detect() returned ${JSON.stringify(hit)}`);
-  }
-
-  if (levels.detect({ name: 'X', careers_url: 'https://example.com/jobs' }) === null) {
-    pass('levels.detect() returns null for non-Levels URLs');
-  } else {
-    fail('levels.detect() should return null for non-Levels URLs');
-  }
-
-  if (levels.detect({ name: 'Spoof', careers_url: 'https://evil.example/www.levels.fyi/jobs' }) === null) {
-    pass('levels.detect() rejects path-spoofed URLs');
-  } else {
-    fail('levels.detect() must NOT misdetect path-spoofed URLs');
-  }
-
-  if (levels.detect({ name: 'X', careers_url: 42 }) === null) {
-    pass('levels.detect() returns null for non-string careers_url');
-  } else {
-    fail('levels.detect() should treat non-string careers_url as missing');
-  }
-
-  const sampleHtml = [
-    '<div role="button" tabindex="0" class="company-jobs-preview-card-module-scss-module__abc__container">',
-    '<h2 class="company-jobs-preview-card-module-scss-module__abc__companyName">Stripe</h2>',
-    '<a href="/jobs?jobId=107341660962071238"><div class="company-jobs-preview-card-module-scss-module__abc__companyJobContainer"><div class="company-jobs-preview-card-module-scss-module__abc__companyJobTitle">Software Engineer<!-- --> <span class="company-jobs-preview-card-module-scss-module__abc__companyJobDate">a day ago</span></div><div class="company-jobs-preview-card-module-scss-module__abc__companyJobLocation">Seattle, WA · On-site · CA$264K - CA$396K</div></div></a>',
-    '<a href="/jobs?jobId=119466637106520774"><div class="company-jobs-preview-card-module-scss-module__abc__companyJobContainer"><div class="company-jobs-preview-card-module-scss-module__abc__companyJobTitle">Product Manager, Payments<!-- --> <span class="company-jobs-preview-card-module-scss-module__abc__companyJobDate">a day ago</span></div><div class="company-jobs-preview-card-module-scss-module__abc__companyJobLocation">Fully Remote</div></div></a>',
-    '</div>',
-    '<div role="button" tabindex="0" class="company-jobs-preview-card-module-scss-module__def__container">',
-    '<img alt="TurbineOne logo" src="x"/>',
-    '<a href="/jobs?jobId=127116953012576966"><div class="company-jobs-preview-card-module-scss-module__def__companyJobTitle">Full-Stack Product Engineer<!-- --> <span class="company-jobs-preview-card-module-scss-module__def__companyJobDate">2 months ago</span></div><div class="company-jobs-preview-card-module-scss-module__def__companyJobLocation">San Francisco, California, United States · On-site</div></a>',
-    '</div>',
-  ].join('');
-
-  const jobs = parseLevelsJobsHtml(sampleHtml);
-  if (jobs.length === 3) pass('parseLevelsJobsHtml extracts 3 job links');
-  else fail(`parseLevelsJobsHtml returned ${jobs.length} jobs, expected 3`);
-
-  if (jobs[0]?.title === 'Software Engineer' && jobs[0]?.company === 'Stripe') {
-    pass('parseLevelsJobsHtml extracts title and company from h2 card header');
-  } else {
-    fail(`row 0 = ${JSON.stringify(jobs[0])}`);
-  }
-
-  if (jobs[0]?.location === 'Seattle, WA · On-site') {
-    pass('parseLevelsJobsHtml strips compensation from location');
-  } else {
-    fail(`row 0 location = ${JSON.stringify(jobs[0]?.location)}`);
-  }
-
-  if (jobs[2]?.company === 'TurbineOne' && jobs[2]?.url === 'https://www.levels.fyi/jobs?jobId=127116953012576966') {
-    pass('parseLevelsJobsHtml falls back to logo alt and normalizes relative URLs');
-  } else {
-    fail(`row 2 = ${JSON.stringify(jobs[2])}`);
-  }
-
-  if (parseLevelsJobsHtml('').length === 0 && parseLevelsJobsHtml(null).length === 0) {
-    pass('parseLevelsJobsHtml handles empty/non-string input');
-  } else {
-    fail('parseLevelsJobsHtml should return [] for empty/non-string input');
-  }
-
-  let fetchUrl = '';
-  const fetched = await levels.fetch(
-    { name: 'Levels default' },
-    {
-      transport: 'http',
-      fetchText: async (url) => {
-        fetchUrl = url;
-        return sampleHtml;
-      },
-      fetchJson: async () => { throw new Error('fetchJson should not be called'); },
-    },
-  );
-  if (fetchUrl === 'https://www.levels.fyi/jobs' && fetched.length === 3) {
-    pass('levels.fetch() defaults to /jobs and parses returned HTML');
-  } else {
-    fail(`levels.fetch() default path failed: url=${fetchUrl}, count=${fetched.length}`);
-  }
-
-  // ── SEARCH mode ──
-  const lv = await import(pathToFileURL(join(ROOT, 'providers/levels.mjs')).href);
-
-  // hasLevelsSearchFilters: real filters vs legacy url-only vs empty
-  if (lv.hasLevelsSearchFilters({ locations: ['new-york-city-area'] }) === true &&
-      lv.hasLevelsSearchFilters({ url: 'https://www.levels.fyi/jobs' }) === false &&
-      lv.hasLevelsSearchFilters({}) === false &&
-      lv.hasLevelsSearchFilters(null) === false) {
-    pass('hasLevelsSearchFilters distinguishes filters from legacy url/empty');
-  } else {
-    fail('hasLevelsSearchFilters misclassified a config');
-  }
-
-  // buildLevelsPaths: cartesian product, location/level/title order, slug validation
-  const paths = lv.buildLevelsPaths({
-    titles: ['software-engineer'],
-    locations: ['new-york-city-area', 'greater-seattle-area'],
-    levels: ['entry', 'mid_staff'],
-  });
-  if (paths.length === 4 &&
-      paths.includes('https://www.levels.fyi/jobs/location/new-york-city-area/level/entry/title/software-engineer') &&
-      paths.includes('https://www.levels.fyi/jobs/location/greater-seattle-area/level/mid_staff/title/software-engineer')) {
-    pass('buildLevelsPaths fans out locations x levels x titles in path order');
-  } else {
-    fail(`buildLevelsPaths produced ${JSON.stringify(paths)}`);
-  }
-
-  if (lv.buildLevelsPaths({ locations: ['new-york-city-area', 'Bad Slug!', '../etc'] }).length === 1) {
-    pass('buildLevelsPaths drops invalid slugs');
-  } else {
-    fail('buildLevelsPaths should reject non-slug values');
-  }
-
-  if (JSON.stringify(lv.buildLevelsPaths({ levels: ['entry'] })) === JSON.stringify(['https://www.levels.fyi/jobs/level/entry'])) {
-    pass('buildLevelsPaths omits empty dimensions');
-  } else {
-    fail('buildLevelsPaths should omit absent path segments');
-  }
-
-  // parseLevelsSearchData: flatten __NEXT_DATA__ results[].jobs[]
-  const recentISO = new Date().toISOString();
-  const oldISO = new Date(Date.now() - 30 * 86_400_000).toISOString();
-  const nextData = { props: { pageProps: { initialJobsData: { results: [
-    { companyName: 'Acme', jobs: [
-      { id: 1, title: 'Software Engineer', locations: ['New York, NY'], minTotalSalary: 260000, minBaseSalary: 180000, postingDate: recentISO, applicationUrl: 'https://boards.greenhouse.io/acme/1' },
-      { id: 2, title: 'Junior Dev', locations: ['New York, NY'], minTotalSalary: 150000, minBaseSalary: 100000, postingDate: recentISO },
-    ] },
-    { companyName: 'Beta', jobs: [
-      { id: 3, title: 'Staff Engineer', locations: ['SF', 'Remote'], minTotalSalary: 300000, minBaseSalary: 200000, postingDate: oldISO },
-      { id: 0, title: '', locations: [] },
-    ] },
-  ] } } } };
-  const parsed = lv.parseLevelsSearchData(nextData);
-  if (parsed.length === 3 && parsed[0].company === 'Acme' && parsed[0].minTotalSalary === 260000 && parsed[2].locations.length === 2) {
-    pass('parseLevelsSearchData flattens companies x jobs and drops blanks');
-  } else {
-    fail(`parseLevelsSearchData returned ${JSON.stringify(parsed)}`);
-  }
-
-  if (lv.parseLevelsSearchData({}).length === 0 && lv.parseLevelsSearchData(null).length === 0) {
-    pass('parseLevelsSearchData handles missing data');
-  } else {
-    fail('parseLevelsSearchData should return [] when results absent');
-  }
-
-  // filterLevelsJobs: comp / base / recency + url building + dedup
-  const filtered = lv.filterLevelsJobs(parsed, { min_total_comp: 200000, min_base_salary: 120000, posted_within_days: 7 });
-  if (filtered.length === 1 && filtered[0].title === 'Software Engineer' &&
-      filtered[0].url === 'https://www.levels.fyi/jobs?jobId=1' &&
-      filtered[0].location === 'New York, NY') {
-    pass('filterLevelsJobs applies comp/base/recency and builds canonical url');
-  } else {
-    fail(`filterLevelsJobs returned ${JSON.stringify(filtered)}`);
-  }
-
-  // unknown salary/date values are kept (missing data not penalized)
-  const keptUnknown = lv.filterLevelsJobs(
-    [{ id: '9', title: 'X', company: 'C', locations: [], minTotalSalary: null, minBaseSalary: null, postingDate: null }],
-    { min_total_comp: 200000, posted_within_days: 1 },
-  );
-  if (keptUnknown.length === 1) {
-    pass('filterLevelsJobs keeps jobs with unknown salary/date');
-  } else {
-    fail('filterLevelsJobs should not drop jobs lacking salary/date data');
-  }
-
-  // SEARCH-mode fetch end to end against a mocked transport
-  const calledUrls = [];
-  const searchFetched = await lv.default.fetch(
-    { name: 'Levels search', levels_search: { titles: ['software-engineer'], locations: ['new-york-city-area'], min_total_comp: 200000, min_base_salary: 120000, posted_within_days: 7 } },
-    {
-      transport: 'http',
-      fetchText: async (url) => { calledUrls.push(url); return `<html><body><script id="__NEXT_DATA__" type="application/json">${JSON.stringify(nextData)}</script></body></html>`; },
-      fetchJson: async () => { throw new Error('fetchJson should not be called'); },
-    },
-  );
-  if (calledUrls.length === 1 &&
-      calledUrls[0] === 'https://www.levels.fyi/jobs/location/new-york-city-area/title/software-engineer' &&
-      searchFetched.length === 1 && searchFetched[0].url === 'https://www.levels.fyi/jobs?jobId=1') {
-    pass('levels.fetch() SEARCH mode fetches path URL and returns filtered jobs');
-  } else {
-    fail(`levels SEARCH fetch: urls=${JSON.stringify(calledUrls)}, jobs=${JSON.stringify(searchFetched)}`);
-  }
-
-} catch (e) {
-  fail(`levels provider tests crashed: ${e.message}`);
-}
-
 // ── 12. TRACKER REPORT LINK NORMALIZATION (#760) ────────────────
 
 console.log('\n12. Tracker report-link normalization');
@@ -1296,6 +1450,105 @@ try {
   }
 } catch (e) {
   fail(`tracker-link normalization tests crashed: ${e.message}`);
+}
+
+// ── MERGE-TRACKER FUZZY DEDUP (#751 / #721 family) ──────────────
+// roleFuzzyMatch over-matched whenever the token overlap dominated the
+// SMALLER side: two distinct roles sharing a long prefix ("Full-Stack
+// Engineer 5, AI Insights & Visualizations" vs "Full Stack Engineer 5, Ads
+// Reporting") or a brand token (#751: "UberEats Feed" vs "Consumer
+// Fulfillment (UberEats)") collapsed onto one tracker row — silently
+// dropping evaluations. The ratio now divides by the token UNION (true
+// Jaccard): genuine reposts (identical token sets) still score 1.0, while
+// distinct specialties fall below the 0.6 threshold.
+console.log('\n🧪 Testing merge-tracker fuzzy dedup (distinct roles vs reposts)...');
+try {
+  const mergeTmp = mkdtempSync(join(tmpdir(), 'career-ops-merge-'));
+  try {
+    mkdirSync(join(mergeTmp, 'data'));
+    mkdirSync(join(mergeTmp, 'reports'));
+    const additionsDir = join(mergeTmp, 'additions');
+    mkdirSync(additionsDir);
+    const tracker = join(mergeTmp, 'data', 'applications.md');
+    writeFileSync(tracker,
+      '# Applications Tracker\n\n' +
+      '| # | Date | Company | Role | Score | Status | PDF | Report | Notes |\n' +
+      '|---|------|---------|------|-------|--------|-----|--------|-------|\n' +
+      '| 1 | 2026-01-04 | StreamCo | Full Stack Engineer 5, Ads Reporting | 4.4/5 | Evaluated | ❌ | [1](../reports/001-streamco-2026-01-04.md) | existing |\n' +
+      '| 2 | 2026-01-04 | Uber | Senior Software Engineer, Consumer Fulfillment (UberEats) | 4.2/5 | Evaluated | ❌ | [2](../reports/002-uber-2026-01-04.md) | existing |\n');
+    for (const n of ['001-streamco-2026-01-04', '002-uber-2026-01-04', '003-streamco-2026-01-05', '004-uber-2026-01-05', '005-streamco-2026-01-06']) {
+      writeFileSync(join(mergeTmp, 'reports', `${n}.md`), '# fixture\n');
+    }
+    // Two DISTINCT roles (long shared prefix / shared brand token) + one true repost (score bump).
+    writeFileSync(join(additionsDir, '003-streamco.tsv'),
+      '3\t2026-01-05\tStreamCo\tFull-Stack Engineer 5, AI Insights & Visualizations\tEvaluated\t4.6/5\t❌\t[3](reports/003-streamco-2026-01-05.md)\tdistinct role\n');
+    writeFileSync(join(additionsDir, '004-uber.tsv'),
+      '4\t2026-01-05\tUber\tSenior Software Engineer, UberEats Feed\tEvaluated\t4.1/5\t❌\t[4](reports/004-uber-2026-01-05.md)\tdistinct team (#751)\n');
+    writeFileSync(join(additionsDir, '005-streamco.tsv'),
+      '5\t2026-01-06\tStreamCo\tFull Stack Engineer 5, Ads Reporting\tEvaluated\t4.5/5\t❌\t[5](reports/005-streamco-2026-01-06.md)\trepost\n');
+
+    run(NODE, ['merge-tracker.mjs'], { env: { ...process.env, CAREER_OPS_TRACKER: tracker, CAREER_OPS_ADDITIONS: additionsDir } });
+    const merged = readFileSync(tracker, 'utf-8');
+
+    // Distinct role sharing a long prefix must be ADDED, not folded into the existing row.
+    if (merged.includes('AI Insights & Visualizations') && merged.includes('Ads Reporting')) {
+      pass('distinct roles with shared prefix kept as separate rows');
+    } else {
+      fail('distinct role with shared prefix was merged away (silent data loss)');
+    }
+
+    // #751 repro: different teams under one brand token must both survive.
+    if (merged.includes('UberEats Feed') && merged.includes('Consumer Fulfillment')) {
+      pass('brand-token roles (#751: UberEats Feed vs Consumer Fulfillment) kept separate');
+    } else {
+      fail('brand-token roles were deduped (#751 regression)');
+    }
+
+    // True repost (identical role tokens) must still UPDATE in place — exactly one row, score bumped.
+    const adsRows = merged.split('\n').filter(l => l.includes('Ads Reporting'));
+    if (adsRows.length === 1 && adsRows[0].includes('4.5/5')) {
+      pass('true repost still updates the existing row in place (4.4 → 4.5, no duplicate)');
+    } else {
+      fail(`repost handling broken: ${adsRows.length} 'Ads Reporting' rows, expected 1 updated to 4.5/5`);
+    }
+  } finally {
+    rmSync(mergeTmp, { recursive: true, force: true });
+  }
+} catch (e) {
+  fail(`merge-tracker fuzzy dedup tests crashed: ${e.message}`);
+}
+
+// ── 12. COLD-START TRIGGER ──────────────────────────────────────
+
+console.log('\n12. Cold-start trigger (deterministic onboarding state)');
+
+try {
+  // Virgin env: none of the 4 user-layer prerequisites present → must onboard.
+  const virgin = mkdtempSync(join(tmpdir(), 'co-cold-'));
+  const v = JSON.parse(run(NODE, ['doctor.mjs', '--json', '--target', virgin]) || '{}');
+  if (v.onboardingNeeded === true && Array.isArray(v.missing) && v.missing.length === 4) {
+    pass('Virgin env → onboarding triggered (4 prerequisites missing)');
+  } else {
+    fail(`Virgin env not flagged for onboarding: ${JSON.stringify(v)}`);
+  }
+  rmSync(virgin, { recursive: true, force: true });
+
+  // Fully provisioned env: all 4 present → must NOT onboard.
+  const ready = mkdtempSync(join(tmpdir(), 'co-ready-'));
+  mkdirSync(join(ready, 'config'), { recursive: true });
+  mkdirSync(join(ready, 'modes'), { recursive: true });
+  for (const f of ['cv.md', 'config/profile.yml', 'modes/_profile.md', 'portals.yml']) {
+    writeFileSync(join(ready, f), 'x');
+  }
+  const r = JSON.parse(run(NODE, ['doctor.mjs', '--json', '--target', ready]) || '{}');
+  if (r.onboardingNeeded === false) {
+    pass('Provisioned env → no onboarding');
+  } else {
+    fail(`Provisioned env falsely flagged for onboarding: ${JSON.stringify(r)}`);
+  }
+  rmSync(ready, { recursive: true, force: true });
+} catch (e) {
+  fail(`Cold-start trigger test crashed: ${e.message}`);
 }
 
 // ── SUMMARY ─────────────────────────────────────────────────────

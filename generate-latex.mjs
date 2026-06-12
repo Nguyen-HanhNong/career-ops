@@ -32,16 +32,10 @@ const REQUIRED_COMMANDS = [
 ];
 
 async function main() {
-  // --byo (bring-your-own-template): the input .tex is the user's own resume,
-  // not the bundled templates/cv-template.tex. Skip the structural validation
-  // that assumes the bundled macros/section names; just sanity-check + compile.
-  const args = process.argv.slice(2);
-  const byo = args.includes('--byo');
-  const positional = args.filter(a => a !== '--byo');
-  const inputPath = positional[0];
-  const outputPath = positional[1]; // optional
+  const inputPath = process.argv[2];
+  const outputPath = process.argv[3]; // optional
   if (!inputPath) {
-    console.error('Usage: node generate-latex.mjs [--byo] <input.tex> [output.pdf]');
+    console.error('Usage: node generate-latex.mjs <input.tex> [output.pdf]');
     process.exit(1);
   }
 
@@ -56,27 +50,21 @@ async function main() {
 
   const issues = [];
 
-  // Structural checks for the bundled template only. In --byo mode the user
-  // supplies their own document class, macros, and section names, so these
-  // would produce false negatives — skip them and rely on tectonic to catch
-  // real LaTeX errors at compile time.
-  if (!byo) {
-    // Check required sections
-    for (const pattern of REQUIRED_SECTIONS) {
-      if (!new RegExp(pattern).test(content)) {
-        issues.push(`Missing section matching: ${pattern}`);
-      }
-    }
-
-    // Check required commands are used
-    for (const cmd of REQUIRED_COMMANDS) {
-      if (!new RegExp(cmd).test(content)) {
-        issues.push(`Missing command: ${cmd}`);
-      }
+  // Check required sections
+  for (const pattern of REQUIRED_SECTIONS) {
+    if (!new RegExp(pattern).test(content)) {
+      issues.push(`Missing section matching: ${pattern}`);
     }
   }
 
-  // Check document structure (applies to both modes)
+  // Check required commands are used
+  for (const cmd of REQUIRED_COMMANDS) {
+    if (!new RegExp(cmd).test(content)) {
+      issues.push(`Missing command: ${cmd}`);
+    }
+  }
+
+  // Check document structure
   if (!content.includes('\\begin{document}')) {
     issues.push('Missing \\begin{document}');
   }
@@ -84,20 +72,10 @@ async function main() {
     issues.push('Missing \\end{document}');
   }
 
-  // Check for unresolved placeholders (applies to both modes — catches a
-  // tailoring step that left a {{TOKEN}} unfilled)
+  // Check for unresolved placeholders
   const unresolvedMatch = content.match(/\{\{[A-Z_]+\}\}/g);
   if (unresolvedMatch) {
     issues.push(`Unresolved placeholders: ${[...new Set(unresolvedMatch)].join(', ')}`);
-  }
-
-  // \location is used by some BYO templates but commonly left commented out;
-  // catch the "used but never defined" case before it becomes a cryptic
-  // "Undefined control sequence" at compile time.
-  if (byo && /(^|[^%].*)\\location\b/m.test(content) &&
-      !/^\s*[^%]*\\def\\location\b/m.test(content) &&
-      !/^\s*[^%]*\\newcommand\{?\\location\}?/m.test(content)) {
-    issues.push('\\location is used but never defined (uncommented). The tailoring step must write an active \\def\\location{City, Region} before \\begin{document}.');
   }
 
   // Check for common unescaped special chars in text (heuristic)
@@ -112,9 +90,8 @@ async function main() {
     if (/\\resumeProjectHeading/.test(line)) projectHeadingCount++;
   }
 
-  // Check pdfgentounicode (bundled template only — BYO templates may use a
-  // different ATS-compatibility approach, e.g. lmodern + T1 fontenc)
-  if (!byo && !content.includes('\\pdfgentounicode=1')) {
+  // Check pdfgentounicode
+  if (!content.includes('\\pdfgentounicode=1')) {
     issues.push('Missing \\pdfgentounicode=1 (ATS compatibility)');
   }
 
@@ -172,39 +149,15 @@ async function main() {
 
   report.engine = engine;
 
-  // Build a normalized compile copy (used for BOTH engines).
-  //
-  // 1) Unicode normalization — mirrors generate-pdf.mjs (the HTML path). A literal
-  //    em dash (U+2014) is silently DROPPED under tectonic's XeTeX engine, merging
-  //    the surrounding words ("Amazon S3—enabling" -> "Amazon S3enabling"). Smart
-  //    quotes/ellipsis are likewise unreliable and read as AI-generated. Convert to
-  //    ASCII/TeX equivalents so output renders correctly and is ATS-clean. (Authors
-  //    should avoid em dashes in the first place — see modes/_shared.md — this is the
-  //    safety net.)
-  // 2) tectonic only — strip pdflatex-only primitives/packages that crash XeTeX.
-  const normalizeUnicode = (s) => s
-    .replace(/—/g, '-')            // em dash  -> hyphen (matches generate-pdf.mjs)
-    .replace(/–/g, '-')            // en dash  -> hyphen
-    .replace(/[‘’]/g, "'")    // smart single quotes -> straight
-    .replace(/[“”]/g, "''")   // smart double quotes -> straight (TeX)
-    .replace(/…/g, '...')          // ellipsis -> three dots
-    .replace(/ /g, '~');           // non-breaking space -> TeX tie
-
-  const dashHits = (content.match(/[—–]/g) || []).length;
-  if (dashHits) report.unicodeNormalized = { dashes: dashHits };
-
-  let compileSource = normalizeUnicode(content);
+  // For tectonic: strip pdflatex-only primitives that cause crashes
+  let compilePath = absPath;
   if (engine === 'tectonic') {
-    compileSource = compileSource
+    const patched = content
       .replace(/\\pdfgentounicode\s*=\s*\d+[^\n]*\n?/g, '')
-      .replace(/\\input\{glyphtounicode\}[^\n]*\n?/g, '')
-      // pdfx (PDF/A) fails under XeTeX: "CreationDate is not properly supported".
-      // The text layer stays ATS-readable without it; for true PDF/A, compile
-      // with pdflatex (e.g. on Overleaf).
-      .replace(/\\usepackage(\[[^\]]*\])?\{pdfx\}[^\n]*\n?/g, '% pdfx stripped for tectonic/XeTeX build\n');
+      .replace(/\\input\{glyphtounicode\}[^\n]*\n?/g, '');
+    compilePath = join(texDir, `${texBase}._tectonic.tex`);
+    await writeFile(compilePath, patched, 'utf-8');
   }
-  const compilePath = join(texDir, `${texBase}._compile.tex`);
-  await writeFile(compilePath, compileSource, 'utf-8');
 
   try {
     if (engine === 'tectonic') {
@@ -220,7 +173,7 @@ async function main() {
         '-interaction=nonstopmode',
         '-halt-on-error',
         `-output-directory=${texDir}`,
-        compilePath,
+        absPath,
       ];
       // First pass
       execFileSync('pdflatex', pdflatexArgs, { cwd: texDir, stdio: 'pipe', timeout: 120_000 });
@@ -246,7 +199,7 @@ async function main() {
 
   // Post-compile: move PDF and clean up (separate from compile errors)
   if (report.compiled) {
-    // PDF is named after the normalized temp compile file (both engines)
+    // Tectonic outputs PDF named after the patched temp file
     const compileBase = basename(compilePath, '.tex');
     const compiledPdf = join(texDir, `${compileBase}.pdf`);
 
@@ -270,8 +223,9 @@ async function main() {
     for (const ext of auxExts) {
       await rm(join(texDir, `${compileBase}${ext}`)).catch(() => {});
     }
-    // Remove the normalized temp compile file (both engines)
-    await rm(compilePath).catch(() => {});
+    if (engine === 'tectonic') {
+      await rm(compilePath).catch(() => {});
+    }
   }
 
   console.log(JSON.stringify(report, null, 2));

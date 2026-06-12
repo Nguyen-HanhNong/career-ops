@@ -1,9 +1,5 @@
 # Mode: pdf — ATS-Optimized PDF Generation
 
-## Template source (CHECK FIRST)
-
-Read `config/profile.yml` → `cv.latex_source`. **If it is set**, the user has a bring-your-own LaTeX resume and wants tailored PDFs to preserve *that* layout — run the **BYO LaTeX path in `modes/latex.md`** instead of the HTML pipeline below (the HTML template would produce a different-looking document). The two paths are otherwise equivalent: same `cv.md` content, same JD keyword tailoring, same ethical rules. Only fall through to the HTML pipeline below when `cv.latex_source` is absent (or the user explicitly asks for the HTML/Canva design).
-
 ## Full pipeline
 
 1. Read `cv.md` as the source of truth
@@ -20,11 +16,10 @@ Read `config/profile.yml` → `cv.latex_source`. **If it is set**, the user has 
 10. Build competency grid from JD requirements (6-8 keyword phrases)
 11. Inject keywords naturally into existing achievements (NEVER invent)
 12. Generate full HTML from template + personalized content
-13. Determine `{REPORT_BASENAME}` = the evaluation report's basename `{NNN}-{company-slug}-{YYYY-MM-DD}` (reuse the existing `reports/{NNN}-{company-slug}-{date}.md` for this company+role; if none exists, number = `max(reports/) + 1` and build the slug from company + role). The PDF mirrors the report name, differing only by extension.
-14. Write HTML to `/tmp/{REPORT_BASENAME}.html`
-15. Execute: `node generate-pdf.mjs /tmp/{REPORT_BASENAME}.html output/{REPORT_BASENAME}.pdf --format={letter|a4}`
-16. **Judge & revise (if `config/profile.yml → cv.judge: true`, default):** run the independent judge from `modes/resume-judge.md` on the generated resume (judge the HTML/PDF text). Apply its edits and regenerate, looping up to `cv.judge_max_iters`. Same rules as the BYO path in `modes/latex.md` step 10.
-17. Report: PDF path, number of pages, keyword coverage %, and the judge's final score/verdict
+13. Read `name` from `config/profile.yml` → normalize to kebab-case lowercase (e.g. "John Doe" → "john-doe") → `{candidate}`
+14. Write HTML to `/tmp/cv-{candidate}-{company}.html`
+15. Execute: `node generate-pdf.mjs /tmp/cv-{candidate}-{company}.html output/cv-{candidate}-{company}-{YYYY-MM-DD}.pdf --format={letter|a4}`
+16. Report: PDF path, number of pages, keyword coverage %
 
 ## ATS Rules (clean parsing)
 
@@ -160,14 +155,14 @@ f. `commit-editing-transaction` to save (ONLY after user approval)
 #### Step 5 — Export and download PDF
 
 a. `export-design` the duplicate as PDF (format: a4 or letter based on JD location)
-b. **IMMEDIATELY** download the PDF using Bash (`{REPORT_BASENAME}` as defined in step 13, with a `-canva` suffix to avoid clobbering the HTML/LaTeX PDF):
+b. **IMMEDIATELY** download the PDF using Bash:
    ```bash
-   curl -sL -o "output/{REPORT_BASENAME}-canva.pdf" "{download_url}"
+   curl -sL -o "output/cv-{candidate}-{company}-canva-{YYYY-MM-DD}.pdf" "{download_url}"
    ```
    The export URL is a pre-signed S3 link that expires in ~2 hours. Download it right away.
 c. Verify the download:
    ```bash
-   file output/{REPORT_BASENAME}-canva.pdf
+   file output/cv-{candidate}-{company}-canva-{YYYY-MM-DD}.pdf
    ```
    Must show "PDF document". If it shows XML or HTML, the URL expired — re-export and retry.
 d. Report: PDF path, file size, Canva design URL (for manual tweaking)

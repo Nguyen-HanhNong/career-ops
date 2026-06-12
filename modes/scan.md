@@ -115,20 +115,6 @@ Durante el scan del agente, mantener en memoria el conjunto **`local_parser_ok`*
 
 **Cada empresa DEBE tener `careers_url` en portals.yml.** Si no la tiene, buscarla una vez, guardarla, y usar en futuros scans.
 
-### Nivel 1b — Levels.fyi: cobertura exhaustiva (opt-in, agente Playwright)
-
-El provider zero-token `levels` (Nivel 0) devuelve solo la **primera página** (~5 empresas × 3 jobs) por cada combinación de filtros, porque la paginación completa de Levels.fyi está detrás de una **API cifrada** (`/v1/job/search` devuelve un payload cifrado y responde 402 sin headers de navegador). Para cobertura **exhaustiva** (todos los jobs que matchean, no solo la página 1), el agente puede paginar la UI renderizada con Playwright — el navegador descifra los resultados en cliente, así que el DOM muestra todas las páginas.
-
-**Esto es opt-in y costoso en tokens** (cada página es un `browser_snapshot` que entra al contexto). Hacerlo SOLO cuando el usuario pide explícitamente un barrido exhaustivo de Levels, **nunca en cada scan**. El scan diario por defecto usa el provider zero-token (`node scan.mjs`), que NO consume tokens; reservá el Playwright para barridos puntuales.
-
-Cuando se pida cobertura exhaustiva de Levels, por cada combinación `locations × levels × titles` de `portals.yml → levels_search`:
-1. `browser_navigate` a la URL filtrada por path: `https://www.levels.fyi/jobs/location/{loc}/level/{lvl}/title/{title}` (omitir segmentos ausentes).
-2. `browser_snapshot`; extraer cada job card (título, empresa, ubicación, URL `/jobs?jobId=...`).
-3. Click en el control de página siguiente (paginación 1..N al final) y repetir hasta agotar páginas o un tope razonable (p. ej. 10 páginas / combo).
-4. Aplicar los filtros in-provider (`min_total_comp`, `min_base_salary`, `posted_within_days`) contra el salario/fecha visibles, y deduplicar contra `scan-history.tsv` / `applications.md` / `pipeline.md` como siempre.
-
-**NUNCA** correr 2+ operaciones Playwright en paralelo (un solo navegador). Esta nota aplica a Levels.fyi específicamente; para `tracked_companies` normales seguí el Nivel 1 de abajo.
-
 ### Nivel 2 — ATS APIs / Feeds (COMPLEMENTARIO)
 
 Para empresas con API pública o feed estructurado **que no estén en `local_parser_ok`**, usar la respuesta JSON/XML como complemento rápido de Nivel 1. Es más rápido que Playwright y reduce errores de scraping visual.
@@ -153,94 +139,15 @@ Para empresas con API pública o feed estructurado **que no estén en `local_par
 
 Los `search_queries` con `site:` filters cubren portales de forma transversal (todos los Ashby, todos los Greenhouse, etc.). Útil para descubrir empresas NUEVAS que aún no están en `tracked_companies`, pero los resultados pueden estar desfasados. Tras filtrar hits de empresas en `local_parser_ok`, los resultados restantes se deduplican con Niveles 0–2.
 
-### Nivel 4 — Job Alert Emails vía Gmail MCP (TIEMPO REAL)
-
-**Prerrequisito:** Gmail MCP conectado en la sesión actual. En Claude Code: `/mcp` → `claude.ai Gmail`. En OpenCode: servidor local `gmail` configurado en `opencode.jsonc` con credenciales en `~/.gmail-mcp/`. Si no está conectado, omitir este nivel silenciosamente.
-
-Lee emails de alertas de empleo de LinkedIn, Indeed y Wellfound del buzón dedicado y extrae ofertas nuevas.
-
-**Configuración:** Leer `linkedin_alerts` en `portals.yml`:
-- `enabled`: si es `false`, omitir el nivel
-- `processed_label_id` / `processed_label_name`: etiqueta Gmail que marca emails ya procesados
-- `sources[]`: lista de fuentes, cada una con `name`, `senders[]`, y `url_pattern`
-
-**Workflow:**
-
-1. Construir query Gmail con todos los remitentes configurados en `sources[].senders`:
-   ```
-   from:(donotreply@jobalert.indeed.com OR jobalert@indeed.com OR jobs-noreply@linkedin.com OR jobalerts-noreply@linkedin.com OR noreply@wellfound.com OR notifications@wellfound.com OR team@wellfound.com) -label:career-ops-processed
-   ```
-2. Para cada thread, leer el cuerpo completo con `get_thread`
-3. Identificar la fuente por el remitente (`sender`) y extraer listings según el formato de cada plataforma:
-
-   **LinkedIn** (`jobs-noreply@linkedin.com` / `jobalerts-noreply@linkedin.com`):
-   - Asunto: `"[N] new jobs match your search"` o `"New jobs for [query]"`
-   - Cuerpo: bloques con título, empresa, ubicación y URL `https://www.linkedin.com/comm/jobs/view/{jobId}?...`
-   - URL canónica: `https://www.linkedin.com/jobs/view/{jobId}` (quitar tracking params)
-   - Source label: `linkedin-alert`
-
-   **Indeed** (`donotreply@jobalert.indeed.com` / `jobalert@indeed.com`):
-   - Asunto: `"[N] new [query] jobs in [location]"` o `"New jobs matching your alert"`
-   - Cuerpo HTML: cada oferta tiene título, empresa, ubicación, salario opcional (todos **limpios**), más un link redirect
-   - Ignorar emails de confirmación (asunto contiene "is now active" o "job alert is active")
-   - Source label: `indeed-alert`
-
-   **⚠️ NO usar los links redirect de Indeed (`/rc/clk/dl?jk=...`). Están rotos por dos razones independientes (verificado):**
-   1. **Corrupción de URL:** el cuerpo del email llega vía Gmail MCP con un **doble decode quoted-printable**. Los `=` seguidos de hex se interpretan como bytes (`=6a`→`j`), lo que **destruye el `jk=` (job key)**. El job key no tiene copia limpia en ningún otro lado del email, así que es **irrecuperable**. Construir `https://www.indeed.com/viewjob?jk={jobId}` desde ese valor da **404**.
-   2. **Bloqueo Cloudflare:** aunque la URL fuera perfecta, las páginas de empleo de Indeed responden **403 "Just a moment…"** a Playwright headless. La home carga (200), pero `/jobs` y `/viewjob` están bloqueadas.
-
-   **✅ Flujo correcto para Indeed — resolver vía el posting canónico de la empresa:**
-   Los metadatos limpios (empresa + título + ubicación) sí llegan bien. Usarlos para encontrar el posting real (que además tiene MÁS detalle que Indeed para el análisis A–F):
-     1. Extraer del email (texto limpio): `company`, `title`, `location`, `salary` (si está)
-     2. **WebSearch**: `{company} {title} {location} careers` (priorizar dominios ATS/careers: Greenhouse, Lever, Ashby, Workday, o el careers oficial de la empresa)
-     3. Tomar el primer resultado que sea el posting canónico de esa empresa para ese rol
-     4. Verificar liveness con Playwright (`browser_navigate` + `browser_snapshot`) como en el Nivel 3 — estas páginas no están bloqueadas por Cloudflare
-     5. Si se confirma activa: usar **esa** URL canónica (no la de Indeed) para el pipeline y el reporte
-     6. Si WebSearch no encuentra el posting canónico (empresa genérica/recruiter, o "Easily apply" solo en Indeed): añadir al pipeline como `local:` o con nota `indeed-only — verificar manualmente`, usando los metadatos limpios del email para una evaluación preliminar
-   - URL canónica esperada: el careers/ATS de la empresa (p. ej. `https://www.google.com/about/careers/...`, `https://job-boards.greenhouse.io/...`), **no** `indeed.com`
-
-   **Wellfound** (`noreply@wellfound.com` / `notifications@wellfound.com` / `team@wellfound.com`):
-   - Asunto: `"New jobs matching [query]"` o `"[N] new startup jobs"`
-   - Cuerpo: bloques con nombre del startup, título del puesto, ubicación
-   - URLs del tipo `https://wellfound.com/jobs/{id}-{slug}` — usar directamente
-   - Source label: `wellfound-alert`
-
-4. Aplicar `title_filter` y `location_filter` de `portals.yml` a cada listing
-5. Deduplicar contra `scan-history.tsv`, `applications.md`, `pipeline.md`
-6. Para cada oferta nueva que pase filtros:
-   a. Añadir a `pipeline.md`: `- [ ] {url} | {company} | {title}`
-   b. Registrar en `scan-history.tsv`: `{url}\t{date}\t{source_label}\t{title}\t{company}\tadded`
-7. Etiquetar el thread como procesado: `label_thread(threadId, "Label_1")`
-8. Archivar el thread para sacarlo de la bandeja principal:
-   a. Remover el label `INBOX` con `unlabel_thread(threadId, "INBOX")`
-   b. Esto archiva automáticamente el email (visible en "All Mail" pero no en Inbox)
-9. Marcar como leído:
-   a. Remover el label `UNREAD` con `unlabel_thread(threadId, "UNREAD")`
-   b. El email ya no aparecerá como sin leer en Gmail
-10. Si un email contiene ofertas pero todas son duplicadas/filtradas → etiquetar, archivar, y marcar como leído igualmente
-
-**Casos especiales:**
-- Emails de confirmación/activación de alerta (asunto: "is now active", "alert is set up", "alert created") → etiquetar y archivar como procesado inmediatamente sin intentar extraer ofertas
-- Si el cuerpo del email no tiene el formato esperado → etiquetar y archivar como procesado, anotar en resumen
-- Si Gmail MCP no está disponible → Ya verificado en Paso 0 (prerequisito). Si falla aquí inesperadamente durante Level 4, omitir Level 4 e informar al usuario en resumen
-
 **Prioridad de ejecución:**
 1. Nivel 0: Local parser → empresas con `parser:` configurado y script existente; construir `local_parser_ok`
 2. Nivel 1: Playwright → `tracked_companies` con `careers_url`, **excepto** `local_parser_ok`
 3. Nivel 2: API → `tracked_companies` con `api:`, **excepto** `local_parser_ok`
 4. Nivel 3: WebSearch → todos los `search_queries` con `enabled: true`; descartar hits de empresas en `local_parser_ok`
-5. **Nivel 4: LinkedIn Alerts** → si `linkedin_alerts.enabled: true` y Gmail MCP conectado
 
 Los niveles son aditivos — se ejecutan en orden, los resultados se mezclan y deduplican. Las empresas en `local_parser_ok` **no** pasan por Niveles 1 ni 2; en Nivel 3 solo aportan descubrimiento transversal (otras empresas en el mismo portal).
 
 ## Workflow
-
-0. **PREREQUISITO — Verificar Gmail MCP disponible**:
-   Si `linkedin_alerts.enabled: true` en `portals.yml`:
-   - Intentar listar labels de Gmail con `list_labels`
-   - Si falla (MCP no conectado): NOTIFICAR AL USUARIO: "⚠️ Gmail MCP no está conectado. Level 4 (LinkedIn/Indeed/Wellfound alerts) será omitido. Para procesar alertas de empleo, conecta Gmail primero (`/mcp` → `claude.ai Gmail`) y ejecuta `/career-ops scan` de nuevo."
-   - Si tiene éxito: continuar con Levels 1-4 normalmente
-   - **Nota importante:** Sin Gmail MCP, la mayoría de ofertas nuevas no se detectarán. Prioridad: conectar Gmail, luego re-escanear.
 
 1. **Leer configuración**: `portals.yml`
 2. **Leer historial**: `data/scan-history.tsv` → URLs ya vistas
@@ -291,9 +198,6 @@ Los niveles son aditivos — se ejecutan en orden, los resultados se mezclan y d
    c. **Omitir** el resultado si `company` (normalizado) coincide con algún nombre en `local_parser_ok`
    d. Acumular el resto en lista de candidatos (dedup con Nivel 0+1+2)
 
-5.5. **Nivel 4 — Email Alerts** (LinkedIn, Indeed, Wellfound) (si `linkedin_alerts.enabled: true` y Gmail MCP disponible):
-   Ejecutar el workflow descrito en la sección Nivel 4 arriba. Acumular resultados en lista de candidatos.
-
 6. **Filtrar por título** usando `title_filter` de `portals.yml`:
    - Al menos 1 keyword de `positive` debe aparecer en el título (case-insensitive)
    - 0 keywords de `negative` deben aparecer
@@ -327,8 +231,7 @@ Los niveles son aditivos — se ejecutan en orden, los resultados se mezclan y d
         - Página contiene: "job no longer available" / "no longer open" / "position has been filled" / "this job has expired" / "page not found"
         - Solo navbar y footer visibles, sin contenido JD (contenido < ~300 chars)
    d. Si expirada: registrar en `scan-history.tsv` con status `skipped_expired` y descartar
-   e. Si hay contenido JD pero no control visible de Apply: seguir `scan_liveness.no_apply_control` de `portals.yml` (`drop` por defecto; `keep` añade a pipeline como revisión manual y registra `added_no_apply_review`)
-   f. Si activa: continuar al paso 8
+   e. Si activa: continuar al paso 8
 
    **No interrumpir el scan entero si una URL falla.** Si `browser_navigate` da error (timeout, 403, etc.), marcar como `skipped_expired` y continuar con la siguiente.
 
@@ -374,21 +277,14 @@ https://...	2026-02-10	WebSearch — AI PM	PM AI	ClosedCo	skipped_expired
 ```
 Portal Scan — {YYYY-MM-DD}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-Gmail MCP: {Conectado y procesando alertas | NO conectado — 18 emails pendientes}
 Queries ejecutados: N
-Alertas procesadas: N emails (Nivel 4: LinkedIn, Indeed, Wellfound) [o "Omitido — Gmail MCP no disponible"]
 Ofertas encontradas: N total
-  - De Level 0 (parsers locales): N
-  - De Level 1 (Playwright): N
-  - De Level 2 (APIs): N
-  - De Level 3 (WebSearch): N
-  - De Level 4 (Alertas email): N
-Filtradas por título: N
+Filtradas por título: N relevantes
 Duplicadas: N (ya evaluadas o en pipeline)
 Expiradas descartadas: N (links muertos, Nivel 3)
 Nuevas añadidas a pipeline.md: N
 
-  + {company} | {title} | {fuente}
+  + {company} | {title} | {query_name}
   ...
 
 → Ejecuta /career-ops pipeline para evaluar las nuevas ofertas.
