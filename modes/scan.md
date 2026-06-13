@@ -144,13 +144,15 @@ Los `search_queries` con `site:` filters cubren portales de forma transversal (t
 2. Nivel 1: Playwright → `tracked_companies` con `careers_url`, **excepto** `local_parser_ok`
 3. Nivel 2: API → `tracked_companies` con `api:`, **excepto** `local_parser_ok`
 4. Nivel 3: WebSearch → todos los `search_queries` con `enabled: true`; descartar hits de empresas en `local_parser_ok`
-5. Nivel 4: Email Alerts → si `linkedin_alerts.enabled: true` y Gmail MCP conectado (LinkedIn, Indeed, Wellfound)
+5. Nivel 4: Email Alerts (LinkedIn, Indeed, Wellfound) → **OBLIGATORIO en cada scan** cuando `linkedin_alerts.enabled: true` y Gmail MCP conectado
 
 Los niveles son aditivos — se ejecutan en orden, los resultados se mezclan y deduplican. Las empresas en `local_parser_ok` **no** pasan por Niveles 1 ni 2; en Nivel 3 solo aportan descubrimiento transversal (otras empresas en el mismo portal).
 
+> **REGLA (Nivel 4 no es opcional):** Cuando `linkedin_alerts.enabled: true` y el Gmail MCP está conectado, **el Nivel 4 corre en TODAS las ejecuciones de `/career-ops scan`** — igual que los Niveles 0–3. El "opt-in" es únicamente el flag `enabled` en `portals.yml`; una vez activado, el agente NO debe omitir, posponer, ni olvidar este nivel, y un scan **no se considera completo** sin él. `scan.mjs` (zero-token) cubre solo Niveles 0–2; los Niveles 3 y 4 los ejecuta el agente. Si delegas el scan a subagentes, el prompt del subagente **debe** incluir el Nivel 4.
+
 ### Nivel 4 — Job Alert Emails vía Gmail MCP (TIEMPO REAL)
 
-Lee emails de alertas de empleo de **LinkedIn, Indeed y Wellfound** desde tu Gmail y los convierte en entradas de pipeline con el JD completo — sin loguearte en ninguno de esos sitios. **Opt-in**: solo corre si `linkedin_alerts.enabled: true` en `portals.yml` y el Gmail MCP está conectado; si no, omitir silenciosamente. La resolución de cada alerta a una URL concreta ocurre **aquí, en scan** (descubrimiento); `pipeline` solo evalúa lo que scan dejó en "Pendientes".
+Lee emails de alertas de empleo de **LinkedIn, Indeed y Wellfound** desde tu Gmail y los convierte en entradas de pipeline con el JD completo — sin loguearte en ninguno de esos sitios. **Parte estándar de cada scan, no un extra opcional:** cuando `linkedin_alerts.enabled: true` en `portals.yml` y el Gmail MCP está conectado, este nivel corre **siempre**, en cada `/career-ops scan`, junto a los Niveles 0–3. El único interruptor es el flag `enabled`: si está en `false` o ausente, o si el Gmail MCP no está conectado, se omite silenciosamente; en cualquier otro caso es **obligatorio** y el agente no debe saltárselo. La resolución de cada alerta a una URL concreta ocurre **aquí, en scan** (descubrimiento); `pipeline` solo evalúa lo que scan dejó en "Pendientes".
 
 **Prerrequisito:** Gmail MCP conectado en la sesión actual. En Claude Code: `/mcp` → `claude.ai Gmail`. En OpenCode: servidor local `gmail` configurado con credenciales en `~/.gmail-mcp/`. Si no está conectado, omitir este nivel silenciosamente (ya verificado en el Paso 0 del workflow).
 
@@ -273,8 +275,8 @@ Los metadatos limpios (empresa + título + ubicación + salario) sí llegan bien
    c. **Omitir** el resultado si `company` (normalizado) coincide con algún nombre en `local_parser_ok`
    d. Acumular el resto en lista de candidatos (dedup con Nivel 0+1+2)
 
-6.5. **Nivel 4 — Email Alerts** (LinkedIn, Indeed, Wellfound) — solo si `linkedin_alerts.enabled: true` y Gmail MCP disponible (verificado en Paso 0):
-   Ejecutar el workflow descrito en la sección [Nivel 4](#nivel-4--job-alert-emails-vía-gmail-mcp-tiempo-real): buscar alertas en Gmail, identificar la fuente por remitente, resolver cada oferta (LinkedIn dos-hops; Wellfound URL directa; Indeed vía posting canónico), y hacer housekeeping del thread. Acumular resultados en lista de candidatos (dedup con Niveles 0–3).
+6.5. **Nivel 4 — Email Alerts** (LinkedIn, Indeed, Wellfound) — **PASO OBLIGATORIO** siempre que `linkedin_alerts.enabled: true` y el Gmail MCP esté disponible (verificado en Paso 0). No es opcional: ejecútalo en cada scan, antes de filtrar y deduplicar. El scan no está completo sin este paso.
+   Ejecutar el workflow descrito en la sección [Nivel 4](#nivel-4--job-alert-emails-vía-gmail-mcp-tiempo-real): buscar alertas en Gmail, identificar la fuente por remitente, resolver cada oferta (LinkedIn dos-hops; Wellfound URL directa; Indeed vía posting canónico), verificar liveness con Playwright (igual que los URLs de Nivel 3, ver Paso 7.5), y hacer housekeeping del thread. Acumular resultados en lista de candidatos (dedup con Niveles 0–3).
 
 6. **Filtrar por título** usando `title_filter` de `portals.yml`:
    - Al menos 1 keyword de `positive` debe aparecer en el título (case-insensitive)
