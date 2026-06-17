@@ -33,7 +33,8 @@ RETRY_FAILED=false
 START_FROM=0
 MAX_RETRIES=2
 MIN_SCORE=0
-MODEL=""  # empty = let claude -p use the Claude Max default
+MODEL=""  # empty = auto-select by volume (see select_model_by_volume), unless --no-auto-model
+AUTO_MODEL=true  # when MODEL is unset, pick a model based on how many offers are pending
 RATE_LIMIT_SLEEP=300
 
 usage() {
@@ -52,10 +53,18 @@ Options:
   --min-score N        Skip PDF/tracker for offers scoring below N (default: 0 = off)
   --rate-limit-sleep N Seconds to wait before retrying a rate-limited worker
                        (default: 300)
-  --model NAME         Claude model passed to `claude -p --model` (default:
-                       unset = Claude Max default). Use a cheaper model for
-                       large batches, e.g. `--model claude-sonnet-4-6`.
+  --model NAME         Claude model passed to `claude -p --model`. Explicit value
+                       overrides auto-selection. e.g. `--model claude-sonnet-4-6`.
+  --no-auto-model      Disable volume-based auto model selection. Falls back to
+                       the Claude Max default unless --model is given.
   -h, --help           Show this help
+
+Auto model selection (default, when neither --model nor --no-auto-model is set):
+  Picks a model based on the number of PENDING offers in this run, to conserve
+  quota on large batches:
+    <30 pending   → opus    (strongest)
+    30-60 pending → sonnet  (balanced)
+    >60 pending   → haiku   (cheapest)
 
 Files:
   batch-input.tsv      Input offers (id, url, source, notes)
@@ -94,6 +103,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --model) MODEL="$2"; shift 2 ;;
+    --no-auto-model) AUTO_MODEL=false; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1"; usage; exit 1 ;;
   esac
@@ -103,6 +113,19 @@ if ! [[ "$RATE_LIMIT_SLEEP" =~ ^[0-9]+$ ]]; then
   echo "ERROR: --rate-limit-sleep must be a non-negative integer (seconds)."
   exit 1
 fi
+
+# Map a pending-offer count to a Claude model alias.
+#   <30 → opus, 30-60 → sonnet, >60 → haiku
+select_model_by_volume() {
+  local count="$1"
+  if (( count > 60 )); then
+    echo "haiku"
+  elif (( count >= 30 )); then
+    echo "sonnet"
+  else
+    echo "opus"
+  fi
+}
 
 # Lock file to prevent double execution
 acquire_lock() {
@@ -590,6 +613,16 @@ main() {
   fi
 
   echo "Pending: $pending_count offers"
+
+  # Auto-select a model by volume when the user did not pin one with --model.
+  if [[ -z "$MODEL" && "$AUTO_MODEL" == "true" ]]; then
+    MODEL="$(select_model_by_volume "$pending_count")"
+    echo "Model: $MODEL (auto-selected for $pending_count pending offers)"
+  elif [[ -n "$MODEL" ]]; then
+    echo "Model: $MODEL (explicit)"
+  else
+    echo "Model: Claude Max default (auto-model disabled)"
+  fi
   echo ""
 
   # Dry run: just list

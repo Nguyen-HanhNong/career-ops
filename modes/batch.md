@@ -68,6 +68,10 @@ Options:
 - `--parallel N` — N workers in parallel
 - `--max-retries N` — attempts per job (default: 2)
 - `--rate-limit-sleep N` — seconds to wait before retrying a rate-limited worker (default: 300; use 0 to fail immediately)
+- `--model NAME` — pin a specific model (explicit value overrides auto-selection)
+- `--no-auto-model` — disable volume-based auto model selection
+
+**Auto model selection (default):** When you don't pass `--model`, the runner picks a model based on the number of **pending** offers in the run, to conserve quota on large batches: `<30 → opus`, `30–60 → sonnet`, `>60 → haiku`. The chosen model is printed before processing. The `/career-ops pipeline` Agent path uses the same mapping (see `modes/pipeline.md`).
 
 ## batch-state.tsv Format
 

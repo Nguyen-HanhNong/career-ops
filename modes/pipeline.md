@@ -18,6 +18,16 @@ Process job URLs stored in `data/pipeline.md`. The user adds URLs at any time an
 
    **Tuning it:** Generating a tailored PDF costs ~30–60s per entry (Playwright launch + HTML render) and produces files that often go unused — most roles score in the 2.x/3.x range and never reach the application stage. Raise `auto_pdf_score_threshold` (e.g. `4.0`) to write only the report for marginal offers and produce the PDF on demand via `/career-ops pdf {slug}`; set `0` to generate one for every offer. Both modes (Path A `/career-ops pipeline` and Path B `batch/batch-runner.sh`) read the same key, so behavior is identical regardless of which path processes an offer.
 3. **If there are 3+ pending URLs**, launch agents in parallel (Agent tool with `run_in_background`) to maximize speed.
+
+   **Model selection by volume (Claude Code only):** Before launching the subagents, count the pending URLs and set the Agent tool's `model` parameter accordingly, to conserve quota on large batches. This is the same volume→model mapping the standalone `batch/batch-runner.sh` uses (its `select_model_by_volume`), so behavior is consistent across both paths:
+
+   | Pending URLs | `model` | Why |
+   |--------------|---------|-----|
+   | < 30 | `opus` | Strongest reasoning; volume is small enough that cost is fine |
+   | 30–60 | `sonnet` | Balanced quality/cost for a medium batch |
+   | > 60 | `haiku` | Cheapest; preserves the plan's quota on a large backlog |
+
+   Apply the chosen `model` to every pipeline subagent you spawn for this run, and tell the user which model was selected and why (e.g. "72 pending URLs → using haiku to stay within quota"). An explicit user request in the conversation (e.g. "use sonnet for this") always overrides the automatic choice. If the Agent tool is unavailable (non–Claude Code platform), ignore this step and process sequentially in the main context.
 4. **At the end**, show summary table:
 
 ```
