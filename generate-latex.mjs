@@ -32,10 +32,17 @@ const REQUIRED_COMMANDS = [
 ];
 
 async function main() {
-  const inputPath = process.argv[2];
-  const outputPath = process.argv[3]; // optional
+  const rawArgs = process.argv.slice(2);
+  const flags = new Set(rawArgs.filter((a) => a.startsWith('--')));
+  const positionals = rawArgs.filter((a) => !a.startsWith('--'));
+  const inputPath = positionals[0];
+  const outputPath = positionals[1]; // optional
+  // --byo ("bring your own" .tex): the user supplies a complete, self-styled CV
+  // (e.g. cv-user.tex). Skip the template-structure validation, since BYO files
+  // use their own section names and macros rather than templates/cv-template.tex.
+  const byo = flags.has('--byo');
   if (!inputPath) {
-    console.error('Usage: node generate-latex.mjs <input.tex> [output.pdf]');
+    console.error('Usage: node generate-latex.mjs [--byo] <input.tex> [output.pdf]');
     process.exit(1);
   }
 
@@ -50,17 +57,20 @@ async function main() {
 
   const issues = [];
 
-  // Check required sections
-  for (const pattern of REQUIRED_SECTIONS) {
-    if (!new RegExp(pattern).test(content)) {
-      issues.push(`Missing section matching: ${pattern}`);
+  // Template-structure checks (skipped for --byo, which uses the user's own layout)
+  if (!byo) {
+    // Check required sections
+    for (const pattern of REQUIRED_SECTIONS) {
+      if (!new RegExp(pattern).test(content)) {
+        issues.push(`Missing section matching: ${pattern}`);
+      }
     }
-  }
 
-  // Check required commands are used
-  for (const cmd of REQUIRED_COMMANDS) {
-    if (!new RegExp(cmd).test(content)) {
-      issues.push(`Missing command: ${cmd}`);
+    // Check required commands are used
+    for (const cmd of REQUIRED_COMMANDS) {
+      if (!new RegExp(cmd).test(content)) {
+        issues.push(`Missing command: ${cmd}`);
+      }
     }
   }
 
@@ -90,8 +100,10 @@ async function main() {
     if (/\\resumeProjectHeading/.test(line)) projectHeadingCount++;
   }
 
-  // Check pdfgentounicode
-  if (!content.includes('\\pdfgentounicode=1')) {
+  // Check pdfgentounicode — a pdflatex-only ATS hint required by the bundled
+  // template. BYO files compiled under tectonic/XeTeX emit Unicode natively, so
+  // this is not required (and is stripped before compiling, see below).
+  if (!byo && !content.includes('\\pdfgentounicode=1')) {
     issues.push('Missing \\pdfgentounicode=1 (ATS compatibility)');
   }
 
@@ -149,12 +161,15 @@ async function main() {
 
   report.engine = engine;
 
-  // For tectonic: strip pdflatex-only primitives that cause crashes
+  // For tectonic: strip pdflatex-only primitives that cause crashes under XeTeX.
+  // pdfx (PDF/A) in particular relies on pdfTeX date handling that aborts tectonic
+  // with a CreationDate error; dropping it still yields ATS-selectable Unicode text.
   let compilePath = absPath;
   if (engine === 'tectonic') {
     const patched = content
       .replace(/\\pdfgentounicode\s*=\s*\d+[^\n]*\n?/g, '')
-      .replace(/\\input\{glyphtounicode\}[^\n]*\n?/g, '');
+      .replace(/\\input\{glyphtounicode\}[^\n]*\n?/g, '')
+      .replace(/\\usepackage(?:\[[^\]]*\])?\{pdfx\}[^\n]*\n?/g, '');
     compilePath = join(texDir, `${texBase}._tectonic.tex`);
     await writeFile(compilePath, patched, 'utf-8');
   }
@@ -166,6 +181,9 @@ async function main() {
         cwd: texDir,
         stdio: 'pipe',
         timeout: 120_000,
+        // Deterministic timestamps; also sidesteps date-handling edge cases in
+        // PDF/A-style packages that some BYO templates carry.
+        env: { ...process.env, SOURCE_DATE_EPOCH: process.env.SOURCE_DATE_EPOCH || '1700000000' },
       });
     } else {
       const pdflatexArgs = [
