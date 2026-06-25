@@ -18,12 +18,11 @@ import { resolve, basename, dirname, join } from 'path';
 import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync } from 'fs';
 
-const REQUIRED_SECTIONS = [
-  '\\\\section{Education}',
-  '\\\\section{Work Experience}',
-  '\\\\section{Personal Projects}',
-  '\\\\section{Technical Skills}',
-];
+// The template emits 4 sections (Education, Work Experience, Personal
+// Projects, Technical Skills). We count \section{} blocks rather than match
+// the English titles, so a localized CV (e.g. "Educación", "学歴") still
+// validates instead of failing with a spurious "Missing section".
+const MIN_SECTIONS = 4;
 
 const REQUIRED_COMMANDS = [
   '\\\\resumeSubheading',
@@ -31,18 +30,18 @@ const REQUIRED_COMMANDS = [
   '\\\\resumeProjectHeading',
 ];
 
+// CJK (Japanese/Chinese/Korean) ranges: Hiragana, Katakana, CJK ideographs,
+// compatibility ideographs, halfwidth katakana, and Hangul. The template is a
+// pdfLaTeX/Computer-Modern setup with no CJK font, so these glyphs cannot
+// render under pdflatex or tectonic — detect them and fail with guidance
+// instead of emitting a broken PDF / cryptic compile log.
+const CJK_RE = /[぀-ヿ㐀-鿿豈-﫿ｦ-ﾟ가-힯ᄀ-ᇿ]/;
+
 async function main() {
-  const rawArgs = process.argv.slice(2);
-  const flags = new Set(rawArgs.filter((a) => a.startsWith('--')));
-  const positionals = rawArgs.filter((a) => !a.startsWith('--'));
-  const inputPath = positionals[0];
-  const outputPath = positionals[1]; // optional
-  // --byo ("bring your own" .tex): the user supplies a complete, self-styled CV
-  // (e.g. cv-user.tex). Skip the template-structure validation, since BYO files
-  // use their own section names and macros rather than templates/cv-template.tex.
-  const byo = flags.has('--byo');
+  const inputPath = process.argv[2];
+  const outputPath = process.argv[3]; // optional
   if (!inputPath) {
-    console.error('Usage: node generate-latex.mjs [--byo] <input.tex> [output.pdf]');
+    console.error('Usage: node generate-latex.mjs <input.tex> [output.pdf]');
     process.exit(1);
   }
 
@@ -57,20 +56,21 @@ async function main() {
 
   const issues = [];
 
-  // Template-structure checks (skipped for --byo, which uses the user's own layout)
-  if (!byo) {
-    // Check required sections
-    for (const pattern of REQUIRED_SECTIONS) {
-      if (!new RegExp(pattern).test(content)) {
-        issues.push(`Missing section matching: ${pattern}`);
-      }
-    }
+  // Check section count (language-agnostic — see MIN_SECTIONS).
+  const sectionCount = (content.match(/\\section\{/g) || []).length;
+  if (sectionCount < MIN_SECTIONS) {
+    issues.push(`Expected at least ${MIN_SECTIONS} \\section{} blocks (Education, Work Experience, Projects, Skills — or localized equivalents), found ${sectionCount}`);
+  }
 
-    // Check required commands are used
-    for (const cmd of REQUIRED_COMMANDS) {
-      if (!new RegExp(cmd).test(content)) {
-        issues.push(`Missing command: ${cmd}`);
-      }
+  // The template cannot render CJK; fail with guidance instead of a broken PDF.
+  if (CJK_RE.test(content)) {
+    issues.push('CJK characters detected. The LaTeX template does not support Japanese/Chinese/Korean yet (pdfLaTeX setup with no CJK font). Use `pdf` mode (HTML to PDF, which renders CJK) for these CVs.');
+  }
+
+  // Check required commands are used
+  for (const cmd of REQUIRED_COMMANDS) {
+    if (!new RegExp(cmd).test(content)) {
+      issues.push(`Missing command: ${cmd}`);
     }
   }
 
@@ -100,10 +100,8 @@ async function main() {
     if (/\\resumeProjectHeading/.test(line)) projectHeadingCount++;
   }
 
-  // Check pdfgentounicode — a pdflatex-only ATS hint required by the bundled
-  // template. BYO files compiled under tectonic/XeTeX emit Unicode natively, so
-  // this is not required (and is stripped before compiling, see below).
-  if (!byo && !content.includes('\\pdfgentounicode=1')) {
+  // Check pdfgentounicode
+  if (!content.includes('\\pdfgentounicode=1')) {
     issues.push('Missing \\pdfgentounicode=1 (ATS compatibility)');
   }
 
@@ -161,15 +159,12 @@ async function main() {
 
   report.engine = engine;
 
-  // For tectonic: strip pdflatex-only primitives that cause crashes under XeTeX.
-  // pdfx (PDF/A) in particular relies on pdfTeX date handling that aborts tectonic
-  // with a CreationDate error; dropping it still yields ATS-selectable Unicode text.
+  // For tectonic: strip pdflatex-only primitives that cause crashes
   let compilePath = absPath;
   if (engine === 'tectonic') {
     const patched = content
       .replace(/\\pdfgentounicode\s*=\s*\d+[^\n]*\n?/g, '')
-      .replace(/\\input\{glyphtounicode\}[^\n]*\n?/g, '')
-      .replace(/\\usepackage(?:\[[^\]]*\])?\{pdfx\}[^\n]*\n?/g, '');
+      .replace(/\\input\{glyphtounicode\}[^\n]*\n?/g, '');
     compilePath = join(texDir, `${texBase}._tectonic.tex`);
     await writeFile(compilePath, patched, 'utf-8');
   }
@@ -181,9 +176,6 @@ async function main() {
         cwd: texDir,
         stdio: 'pipe',
         timeout: 120_000,
-        // Deterministic timestamps; also sidesteps date-handling edge cases in
-        // PDF/A-style packages that some BYO templates carry.
-        env: { ...process.env, SOURCE_DATE_EPOCH: process.env.SOURCE_DATE_EPOCH || '1700000000' },
       });
     } else {
       const pdflatexArgs = [
