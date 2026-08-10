@@ -158,8 +158,52 @@ The `search_queries` with `site:` filters cover portals transversally (all Ashby
 2. Level 1: Playwright → `tracked_companies` with a `careers_url`, **except** `local_parser_ok`
 3. Level 2: API → `tracked_companies` with an `api:`, **except** `local_parser_ok`
 4. Level 3: WebSearch → all `search_queries` with `enabled: true`; discard hits from companies in `local_parser_ok`
+5. Level 4: Gmail → unread job alert emails from `linkedin_alerts.sources` senders, if `linkedin_alerts.enabled: true`
 
 Levels are additive — they are executed in order, and results are merged and deduplicated. Companies in `local_parser_ok` **do not** go through Levels 1 or 2; in Level 3, they only contribute transversal discovery (other companies on the same portal).
+
+### Level 4 — Gmail Job Alert Ingestion
+
+Reads unread job alert emails via Gmail MCP and extracts job listings. Enabled when `linkedin_alerts.enabled: true` in `portals.yml`. Configuration lives under `linkedin_alerts.sources` (senders + url_patterns per provider).
+
+**Pagination is mandatory.** Gmail search returns up to 100 threads per page. When the inbox is large (e.g. after a long break), there will be multiple pages. Always loop until all pages are exhausted:
+
+```
+page 1: search_threads(query, maxResults=100)  → threads[], nextPageToken?
+page 2: search_threads(query, maxResults=100, pageToken=nextPageToken)
+...
+stop when response has no nextPageToken
+```
+
+**Algorithm:**
+
+1. Build the Gmail search query:
+   ```
+   from:(sender1 OR sender2 ...) is:unread -label:career-ops-processed
+   ```
+   Include all senders from all `linkedin_alerts.sources` entries.
+
+2. Call `mcp__claude_ai_Gmail__search_threads` with `maxResults: 100`.
+
+3. **Paginate**: if the response includes a `nextPageToken`, call again with `pageToken: {nextPageToken}`. Repeat until no `nextPageToken` is returned. Collect ALL threads before processing.
+
+4. For each thread: call `mcp__claude_ai_Gmail__get_thread` (or `get_message` for the first message) to read body/snippet.
+
+5. Extract job listing URLs matching each source's `url_pattern`. For LinkedIn, resolve tracking redirect URLs to the canonical `linkedin.com/jobs/view/{id}` form.
+
+6. Apply filters:
+   - `title_filter` (positive/negative keywords)
+   - `location_filter` (block/allow lists)
+   - `company_blocklist` from `portals.yml`
+   - Deduplicate against `scan-history.tsv`, `applications.md`, `pipeline.md`
+
+7. For each new URL: verify liveness with `node check-liveness.mjs <url>`. Active → add to pipeline.md + scan-history.tsv. Expired → record `skipped_expired`.
+
+8. **Label each processed thread** with `linkedin_alerts.processed_label_id` using `mcp__claude_ai_Gmail__label_thread` immediately after processing it — do not wait until all threads are done. This ensures a partial run (e.g. context limit hit) doesn't re-read already-processed emails on the next run.
+
+9. If `linkedin_alerts.allow_guest_endpoint: true`, attempt to resolve LinkedIn job URLs that have no matching company ATS posting via the LinkedIn guest API (`https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{id}`). Flag those entries as `unverified mirror` in scan-history notes.
+
+**Error handling:** If a thread fails to read, skip it and continue. Do not let a single bad email abort the entire Level 4 pass. Log skipped thread IDs in the output summary.
 
 ## Workflow
 
@@ -264,6 +308,16 @@ Levels are additive — they are executed in order, and results are merged and d
 9. **Offers filtered by title**: record in `scan-history.tsv` with status `skipped_title`.
 10. **Duplicate offers**: record with status `skipped_dup`.
 11. **Expired offers (Level 3)**: record with status `skipped_expired`.
+
+12. **Level 4 — Gmail Job Alert Ingestion** (if `linkedin_alerts.enabled: true`):
+   a. Build search query: `from:(all configured senders) is:unread -label:{processed_label_name}`
+   b. Call `mcp__claude_ai_Gmail__search_threads` with `maxResults: 100`.
+   c. **MUST paginate**: if response has `nextPageToken`, call again with that token. Repeat until no `nextPageToken`. Collect every thread before processing any.
+   d. For each thread: read content via `mcp__claude_ai_Gmail__get_thread`, extract job URLs matching each source's `url_pattern`.
+   e. Apply `title_filter`, `location_filter`, `company_blocklist`; deduplicate.
+   f. Verify liveness: `node check-liveness.mjs <url>`. Add active URLs to pipeline.md and scan-history.tsv.
+   g. **Label the thread immediately** after processing (do not batch-label at end): `mcp__claude_ai_Gmail__label_thread` with `linkedin_alerts.processed_label_id`.
+   h. On error reading a thread: skip, log thread ID, continue.
 
 ## Extraction of Title and Company from WebSearch Results
 
@@ -398,15 +452,18 @@ How it works:
 ```text
 Portal Scan — {YYYY-MM-DD}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━
-Queries executed: N
-Offers found: N total
-Filtered by title: N relevant
-Duplicates: N (already evaluated or in pipeline)
-Expired discarded: N (dead links, Level 3)
-New added to pipeline.md: N
+Level 0 (scan.mjs):  N companies scanned, N new jobs
+Level 3 (WebSearch): N queries executed, N new jobs
+Level 4 (Gmail):     N emails processed (N unread found), N new jobs
 
-  + {company} | {title} | {query_name}
+Total new added to pipeline.md: N
+
+New offers (Level 3 + Level 4):
+  + {company} | {title} | {source}
   ...
+
+Expired/filtered discarded: N
+Gmail threads labeled career-ops-processed: N
 
 → Run the `pipeline` mode to evaluate the new offers (`/career-ops pipeline` where available, or ask the agent to run `pipeline`).
 ```
