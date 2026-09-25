@@ -134,6 +134,19 @@ function resolveEndpoint(entry) {
   // a non-Workday api: value doesn't shadow a valid careers_url.
   for (const url of [entry.api, entry.careers_url]) {
     if (typeof url !== 'string' || !url) continue;
+    // Try the full CXS API URL first: /wday/cxs/{tenant}/{site}/jobs
+    // This must run before the generic pattern, which would capture 'wday' as site.
+    const cxs = url.match(/^https:\/\/([\w-]+)\.(wd[\w-]*)\.myworkdayjobs\.com\/wday\/cxs\/[\w-]+\/([\w-]+)\/jobs/);
+    if (cxs) {
+      const [, tenant, instance, site] = cxs;
+      const origin = `https://${tenant}.${instance}.myworkdayjobs.com`;
+      return {
+        api: `${origin}/wday/cxs/${tenant}/${site}/jobs`,
+        jobBase: `${origin}/${site}`,
+        origin,
+      };
+    }
+    // Generic pattern for careers_url or branded pages: /{site} or /locale/{site}
     const m = url.match(/^https:\/\/([\w-]+)\.(wd[\w-]*)\.myworkdayjobs\.com\/(?:[a-z]{2}-[A-Z]{2}\/)?([^/?#]+)/);
     if (!m) continue;
     const [, tenant, instance, site] = m;

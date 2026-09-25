@@ -56,7 +56,9 @@ export const ATS = {
   lever: {
     // EU boards (jobs.eu.lever.co) resolve to api.eu.lever.co, mirroring the
     // provider's resolveApiUrl; the default is the base instance.
-    probeUrl: (slug, { eu = false } = {}) => `https://api.${eu ? 'eu.' : ''}lever.co/v0/postings/${slug}`,
+    // ?mode=json forces JSON output — some boards (e.g. Atlassian) return 404
+    // on the bare path but respond correctly with this param.
+    probeUrl: (slug, { eu = false } = {}) => `https://api.${eu ? 'eu.' : ''}lever.co/v0/postings/${slug}?mode=json`,
     jobCount: (json) => (Array.isArray(json) ? json.length : null),
   },
 };
