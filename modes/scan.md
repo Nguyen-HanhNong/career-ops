@@ -208,8 +208,7 @@ stop when response has no nextPageToken
 ## Workflow
 
 1. **Read Configuration**: `portals.yml`
-2. **Read History**: `data/scan-history.tsv` → already seen URLs
-3. **Read Dedup Sources**: `data/applications.md` + `data/pipeline.md`
+2. **Dedup lookups (Levels 1–3 only — Level 0 dedups in-process):** Don't read `data/scan-history.tsv` (grows unbounded — hundreds of KB to multiple MB over a long-running pipeline), `data/pipeline.md`, or `data/applications.md` directly into context just to check "have I seen this before." Once Levels 1–3 have produced their candidate list (step 4 onward), batch every candidate URL and `{company, role}` pair into one call: `node dedup-check.mjs --file <tmpfile>` (JSON: `{ "urls": [...], "pairs": [["Company","Role"], ...] }`) and use its `seen: true/false` verdicts for the Deduplicate step below. This mirrors `scan.mjs`'s own in-process dedup for Level 0 (`loadSeenUrls`/`loadSeenCompanyRoles`) without the agent ever reading the raw files.
 
 3.5. **Level 0 — Local Parser** (`scan.mjs`, zero-token):
    Initialize `local_parser_ok = []`.
@@ -272,10 +271,10 @@ stop when response has no nextPageToken
    - An offer is skipped only when the provider supplied a posting date (`postedAt`) AND it is older than N days.
    - Offers from providers that expose no date always pass (do not penalize missing data).
 
-7. **Deduplicate** against 3 sources:
-   - `scan-history.tsv` → exact URL already seen
-   - `applications.md` → normalized company + role already evaluated
-   - `pipeline.md` → exact URL already in pending or processed list
+7. **Deduplicate** against 3 sources — via `node dedup-check.mjs` (see step 2; never by reading the raw files):
+   - `scan-history.tsv` + `pipeline.md` → exact URL already seen (`--url`/`urls[]`, `seen: true`)
+   - `applications.md` → normalized company + role already evaluated (`--pair`/`pairs[]`, `seen: true`)
+   Drop any candidate the script reports as `seen: true`; only `seen: false` candidates continue.
 
 7.1. **Cross-listing check (#1597)** — automatic in `scan.mjs`, warn only:
    - Each new offer's JD body (when the provider's list API ships one, e.g. Lever) is fingerprinted (64-bit SimHash, stored as the 8th `scan-history.tsv` column).
@@ -285,21 +284,20 @@ stop when response has no nextPageToken
 
 7.5. **Verify Liveness of WebSearch Results (Level 3)** — BEFORE adding to pipeline:
 
-   WebSearch results can be outdated (Google caches results for weeks or months). To avoid evaluating expired offers, verify every new URL coming from Level 3 using Playwright. Levels 1 and 2 are inherently real-time and do not require this verification.
+   WebSearch results can be outdated (Google caches results for weeks or months). To avoid evaluating expired offers, verify every new URL coming from Level 3. Levels 1 and 2 are inherently real-time and do not require this verification.
 
-   For each new Level 3 URL (sequential — NEVER parallel Playwright):
-   a. `browser_navigate` to the URL.
-   b. `browser_snapshot` to read the content.
-   c. Classify:
-      - **Active**: visible job title + role description + visible Apply/Submit/Apply Now control inside the main content area. Do not count generic header/navbar/footer text.
-      - **Expired** (any of these signals):
-        - Final URL contains `?error=true` (Greenhouse redirects here when an offer is closed).
-        - Page contains: "job no longer available" / "no longer open" / "position has been filled" / "this job has expired" / "page not found".
-        - Only navbar and footer are visible, with no JD content (content < ~300 characters).
-   d. If expired: record in `scan-history.tsv` with status `skipped_expired` and discard.
-   e. If active: continue to step 8.
+   **Batch verify with the zero-token checker — do not drive Playwright per URL.** Collect every new (non-duplicate) Level 3 URL into one temp file and run `node check-liveness.mjs --file <tmpfile>` (add `--throttle` for large batches) once, the same way `pipeline.md`'s liveness sweep does. It uses `liveness-core.mjs`'s classifier — a superset of the signals below (bot-challenge detection, multi-language closure banners, `?error=true` redirects, apply-control detection) — for free instead of spending a `browser_navigate` + `browser_snapshot` per candidate.
 
-   **Do not interrupt the entire scan if a single URL fails.** If `browser_navigate` errors (timeout, 403, etc.), mark as `skipped_expired` and continue with the next one.
+   a. Write all candidate URLs (one per line) to a temp file.
+   b. Run `node check-liveness.mjs --file <tmpfile>`; read its per-URL verdicts (active / expired / uncertain) from stdout.
+   c. **Expired** → record in `scan-history.tsv` with status `skipped_expired` and discard.
+   d. **Uncertain** → keep it; do not discard on an inconclusive signal (a transient timeout shouldn't drop a possibly-live posting — it will be re-verified at `pipeline` time).
+   e. **Active** → continue to step 8.
+
+   **Fallback (only if `check-liveness.mjs` is unavailable or errors on a URL):** fall back to a single sequential `browser_navigate` + `browser_snapshot` for that URL — never parallel Playwright. Classify it yourself:
+   - **Active**: visible job title + role description + visible Apply/Submit/Apply Now control inside the main content area. Do not count generic header/navbar/footer text.
+   - **Expired** (any of these signals): final URL contains `?error=true`; page contains "job no longer available" / "no longer open" / "position has been filled" / "this job has expired" / "page not found"; or only navbar and footer are visible with no JD content (content < ~300 characters).
+   Do not interrupt the rest of the batch if one fallback check fails; mark it `skipped_expired` and continue.
 
 8. **For each new verified offer that passes filters**:
    a. Add to the `pipeline.md` "Pending" section: `- [ ] {url} | {company} | {title}`

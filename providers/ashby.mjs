@@ -1,4 +1,5 @@
 // @ts-check
+import { DEFAULT_TIMEOUT_MS } from './_http.mjs';
 /** @typedef {import('./_types.js').Provider} Provider */
 
 // Ashby provider — hits the public posting-api endpoint.
@@ -6,12 +7,12 @@
 //
 // Ashby's public posting-api carries a ~10s+ server-side latency floor
 // (response time is independent of board size) and rate-limits repeated
-// unauthenticated hits. The global default timeout (10s, providers/_http.mjs)
+// unauthenticated hits. The old global default timeout (10s, providers/_http.mjs)
 // sits right on that floor, so requests race the timeout and abort. We give
 // Ashby a longer timeout plus a backoff+jitter retry (the backoff spaces
 // requests out to dodge rate-limiting).
 // See .planning/codebase/ashby-scan-abort-diagnosis.md.
-const ASHBY_TIMEOUT_MS = 30_000;
+const ASHBY_TIMEOUT_MS = Math.max(30_000, DEFAULT_TIMEOUT_MS);
 const ASHBY_RETRIES = 2;
 
 // Annualization multipliers for different compensation intervals

@@ -6,7 +6,12 @@ import { DEFAULT_USER_AGENT, BROWSER_LIKE_USER_AGENT } from '../user-agent.mjs';
 
 export { BROWSER_LIKE_USER_AGENT };
 
-const DEFAULT_TIMEOUT_MS = 10_000;
+// 90s default: on bandwidth-capped links a large board (Lever ships full
+// descriptions inline — Outreach is ~760 KB, ~47s at ~16 KB/s) needs far more than 10s to
+// stream the body, and the old 10s cap made healthy boards look unreachable.
+// Override per-run with CAREER_OPS_HTTP_TIMEOUT_MS.
+const envTimeout = Number(process.env.CAREER_OPS_HTTP_TIMEOUT_MS);
+export const DEFAULT_TIMEOUT_MS = Number.isFinite(envTimeout) && envTimeout > 0 ? envTimeout : 90_000;
 
 async function fetchWithTimeout(url, { timeoutMs = DEFAULT_TIMEOUT_MS, headers = {}, method = 'GET', body = null, redirect = 'follow' } = {}, consume) {
   const controller = new AbortController();

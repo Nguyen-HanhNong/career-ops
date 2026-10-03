@@ -169,16 +169,35 @@ if (dupes === 0) ok('No exact duplicates found');
 // first, then fall back to the repo root before flagging a link broken.
 const TRACKER_DIR = dirname(APPS_FILE);
 let brokenReports = 0;
+// Report files are intentionally ephemeral: the `cleanup` mode deletes every
+// report not from today, and `mark-cleaned-reports.mjs` appends a 🧹 marker to
+// the Report cell of every row whose file is gone (see modes/cleanup.md). A
+// dangling link carrying that marker is therefore the documented, expected end
+// state — not a defect. Flagging it drowned the real errors: 359 of 360 errors
+// on this tracker were correctly-marked cleaned reports.
+//
+// A dangling link WITHOUT the marker is still a genuine error: either the
+// marker sync has not been run (`node mark-cleaned-reports.mjs`) or the link
+// points at a filename that never existed.
+const CLEANED_MARKER = '🧹';
+let cleanedReports = 0;
 for (const e of entries) {
   const match = e.report.match(/\]\(([^)]+)\)/);
   if (!match) continue;
   const link = match[1];
   if (!existsSync(join(TRACKER_DIR, link)) && !existsSync(join(CAREER_OPS, link))) {
-    error(`#${e.num}: Report not found: ${link}`);
+    if (e.report.includes(CLEANED_MARKER)) {
+      cleanedReports++;
+      continue;
+    }
+    error(`#${e.num}: Report not found: ${link} (run \`node mark-cleaned-reports.mjs\` if the file was cleaned)`);
     brokenReports++;
   }
 }
 if (brokenReports === 0) ok('All report links valid');
+if (cleanedReports > 0) {
+  ok(`${cleanedReports} report${cleanedReports === 1 ? '' : 's'} cleaned from disk and marked ${CLEANED_MARKER} (expected)`);
+}
 
 // --- Check 4: Score format ---
 let badScores = 0;
@@ -340,13 +359,36 @@ for (const e of entries) {
   }
 }
 
+// A report that declares itself a duplicate is SUPPOSED to have no tracker row:
+// the brief has workers write the report but never a TSV, because merge-tracker
+// fuzzy-matches on title and would apply the duplicate's (usually N/A) score
+// over the original row — that is how a verified 4.7 Stripe row was once zeroed.
+// Warning about these trains the reader to ignore the whole orphan class, which
+// hides the orphans that are genuine lost rows.
+//
+// For the rest, `node batch/find-orphan-reports.mjs` classifies each one as a
+// duplicate URL, superseded history (company+role already on a row), or a
+// genuinely missing row — only the last needs action.
+const DECLARED_DUPLICATE_RE = /duplicate\s+of\s+#?\d+/i;
 let orphanReports = 0;
+let declaredDuplicates = 0;
 for (const name of reportFiles) {
   const num = parseInt(name.match(REPORT_FILE_RE)[1], 10);
-  if (!referencedNums.has(num)) {
-    warn(`Orphan report — no tracker row references #${num}: reports/${name}`);
-    orphanReports++;
+  if (referencedNums.has(num)) continue;
+  let body = '';
+  try { body = readFileSync(join(REPORTS_DIR, name), 'utf-8').slice(0, 4000); } catch { /* unreadable — still an orphan */ }
+  if (DECLARED_DUPLICATE_RE.test(body)) {
+    declaredDuplicates++;
+    continue;
   }
+  warn(`Orphan report — no tracker row references #${num}: reports/${name}`);
+  orphanReports++;
+}
+if (declaredDuplicates > 0) {
+  ok(`${declaredDuplicates} report${declaredDuplicates === 1 ? '' : 's'} declared "duplicate of #N" and correctly have no tracker row`);
+}
+if (orphanReports > 0) {
+  warn(`${orphanReports} orphan report${orphanReports === 1 ? '' : 's'} above — run \`node batch/find-orphan-reports.mjs\` to separate lost rows from superseded history`);
 }
 if (orphanReports === 0) ok('No orphan reports');
 
