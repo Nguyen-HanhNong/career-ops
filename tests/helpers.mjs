@@ -2,14 +2,51 @@
 // Moved verbatim from test-all.mjs (issue #1440); no framework by design:
 // the suite must run on a fresh clone with only Node.
 import { execFileSync } from 'child_process';
-import { existsSync } from 'fs';
+import { accessSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync as _rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { isNestedCheckout } from '../lib/mjs-files.mjs';
+import { localToday } from '../lib/local-today.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const ROOT = join(__dirname, '..');   // repo root (tests/ lives one level down)
 export const QUICK = process.argv.includes('--quick');
 export const NODE = process.execPath;
+
+/**
+ * A merge-tracker fixture must not consult the install's batch history.
+ * Keep the default state path beside the fixture additions directory; tests
+ * that exercise explicit batch-state behavior should pass their own path.
+ * @param {string} additionsDir - Fixture additions directory.
+ * @returns {string} Fixture-local batch-state path.
+ */
+export function isolatedBatchStatePath(additionsDir) {
+  return join(dirname(additionsDir), 'batch-state.tsv');
+}
+
+// Windows keeps a handle open on a just-exited child's files for a short
+// window (antivirus widens it), so a cleanup rmSync can fail with EPERM even
+// though every assertion passed — `force: true` suppresses ENOENT, not EPERM.
+// Node retries exactly that error class (EBUSY/EMFILE/ENFILE/ENOTEMPTY/EPERM)
+// with linear backoff when given maxRetries, so default it here. An explicit
+// option still wins, and a removal that keeps failing still throws. Same
+// wrapper test-all.mjs applies to its own call sites (#3066), shared so the
+// suites under tests/ cannot drift from it.
+export const rmSync = (target, opts = {}) => _rmSync(target, { maxRetries: 10, retryDelay: 100, ...opts });
+
+/**
+ * The per-script budget run() applies when a caller does not override it.
+ *
+ * Deliberately NOT substituted into the `timeout: 30000` literal inside run()
+ * below. The comment there explains why that execFileSync call is kept
+ * byte-identical: editing the line makes CodeQL re-attribute its long-standing
+ * "uncontrolled command line" finding to whichever PR touched it. Exported so
+ * callers can reason about the budget — how close a script came to it, say —
+ * rather than hard-coding the number in a second file. The two are linked by
+ * this comment, not by the compiler: change one, change the other.
+ */
+export const DEFAULT_SCRIPT_TIMEOUT_MS = 30_000;
 
 let passed = 0;
 let failed = 0;
@@ -174,6 +211,11 @@ export function run(cmd, args = [], opts = {}) {
   // executable is still allowlisted and the arguments are still an argv vector.
   lastFailure = null;
   const exe = resolveAllowedExecutable(cmd);
+  const env = opts.env ?? process.env;
+  const isolatedOpts = args.includes('merge-tracker.mjs') && env.CAREER_OPS_ADDITIONS
+    ? { ...opts, env: { ...env, CAREER_OPS_BATCH_STATE: isolatedBatchStatePath(env.CAREER_OPS_ADDITIONS) } }
+    : opts;
+  opts = isolatedOpts;
   try {
     return execFileSync(exe, args, { cwd: ROOT, encoding: 'utf-8', timeout: 30000, ...opts }).trim();
   } catch (e) {
@@ -208,9 +250,112 @@ export function lastRunFailure() {
 }
 
 /**
+ * Today as `YYYY-MM-DD` in UTC — the form the scripts under test emit from
+ * their own `today()`.
+ *
+ * @param {Date} [at=new Date()] - Instant to render; injectable for tests.
+ * @returns {string}
+ */
+export function utcDay(at = new Date()) {
+  return at.toISOString().split('T')[0];
+}
+
+/**
+ * Every UTC day an operation bracketed by `before` and `after` could have
+ * observed, inclusive: one when it stayed inside a day, two when it crossed
+ * midnight, and each intervening day for anything longer.
+ *
+ * Returning only the two boundaries would be enough for a run() call left on
+ * its default timeout, but that timeout is caller-overridable, and a child
+ * spanning two midnights can report a day that sits between them. Filling the
+ * range keeps the result a property of the inputs rather than of a timeout
+ * somebody may change later.
+ *
+ * The bounds are ordered before use, so a clock stepped backwards mid-call
+ * (NTP correction on a CI runner) still yields the covering range instead of
+ * an empty one. Either bound unparseable yields [] — including when both are
+ * the same unparseable string, so the answer never depends on which branch a
+ * bad input happens to take.
+ *
+ * @param {string} before - utcDay() read before the operation.
+ * @param {string} after - utcDay() read after it.
+ * @returns {string[]} Ascending, inclusive of both bounds; [] if either is unparseable.
+ */
+export function daysSpanned(before, after) {
+  const start = Date.parse(`${before}T00:00:00Z`);
+  const end = Date.parse(`${after}T00:00:00Z`);
+  if (Number.isNaN(start) || Number.isNaN(end)) return [];
+  if (start === end) return [before];
+  const [lo, hi] = start < end ? [start, end] : [end, start];
+  const days = [];
+  for (let t = lo; t <= hi; t += 86_400_000) {
+    days.push(utcDay(new Date(t)));
+  }
+  return days;
+}
+
+/**
+ * run(), plus the UTC day(s) the child could have seen on its own clock.
+ *
+ * A test that captures the day once and compares it to a date the child
+ * computed for itself is reading the clock twice, and a UTC midnight between
+ * those two reads makes them disagree — turning an otherwise-green run red on
+ * whichever runner happens to straddle the boundary (#3816: macOS crossed
+ * midnight four seconds into test-all §12, while ubuntu and windows reached
+ * the same section after the rollover and passed).
+ *
+ * Bracketing the call removes the race without weakening the assertion: the
+ * child ran somewhere inside [before, after], so its own day is one of the
+ * returned days, and the caller still checks the date is current rather than
+ * merely date-shaped.
+ *
+ * @param {string} cmd - Executable, resolved through the run() allowlist.
+ * @param {string[]} [args=[]]
+ * @param {object} [opts={}] - Passed through to run().
+ * @returns {{out: string|null, days: string[]}}
+ */
+export function runAcrossUtcDay(cmd, args = [], opts = {}) {
+  const before = utcDay();
+  const out = run(cmd, args, opts);
+  return { out, days: daysSpanned(before, utcDay()) };
+}
+
+/**
+ * Like {@link runAcrossUtcDay}, for a child that dates its output with the LOCAL
+ * calendar day (lib/local-today.mjs) instead of the UTC one.
+ *
+ * Same midnight hazard, different midnight: a single capture taken before the
+ * call fails a run that crosses the child's LOCAL midnight (#3816 is the UTC
+ * version of exactly this). Reusing daysSpanned() is safe -- it is date
+ * arithmetic over two YYYY-MM-DD strings and does not care which clock produced
+ * them.
+ *
+ * @param {string} cmd - Executable to run.
+ * @param {string[]} [args] - Arguments.
+ * @param {object} [opts] - Passed through to run().
+ * @returns {{out: string|null, days: string[]}} Output, and the local day(s) the call spanned.
+ */
+export function runAcrossLocalDay(cmd, args = [], opts = {}) {
+  const before = localToday();
+  const out = run(cmd, args, opts);
+  return { out, days: daysSpanned(before, localToday()) };
+}
+
+/**
  * The last failure rendered for interpolation into a failure message, or an
  * empty string when nothing has failed, so a caller can append it
  * unconditionally without changing its message on the success path.
+ *
+ * Over-long streams keep BOTH ENDS rather than the head. A failing script's
+ * diagnostic line can be at either end: an early case that blew up, or — for
+ * the suites here, which print a tick per assertion — the `Results:` summary
+ * and the newest cases at the very bottom. Keeping only the head means the
+ * later a case was added, the more certain it is to be truncated away, which
+ * is exactly backwards for something read only when a run goes red.
+ *
+ * That is not hypothetical: `agent-inbox-tests.mjs` grew past this cap, and a
+ * windows-latest failure of its §7 cut off mid-word one assertion short of §8's
+ * verdict — the assertion added specifically to attribute that failure (#3035).
  *
  * @param {number} [maxChars=2000] - Per-stream cap, keeping a runaway log readable.
  * @returns {string}
@@ -219,8 +364,32 @@ export function formatRunFailure(maxChars = 2000) {
   if (!lastFailure) return '';
   const clip = (s) => {
     const t = String(s ?? '').trim();
-    if (!t) return '';
-    return t.length > maxChars ? `${t.slice(0, maxChars)}\n    ... (${t.length - maxChars} more chars)` : t;
+    if (!t || t.length <= maxChars) return t;
+    // The marker's own width comes OUT of the budget rather than on top of it,
+    // so maxChars is a promise about the string this returns. (Appending the
+    // marker after slicing to maxChars, as this did before, put every clipped
+    // stream over its documented cap.)
+    const mark = (n) => `\n    ... (${n} more chars elided)\n`;
+    // The dropped count is printed inside the marker, so the marker's width
+    // depends on the budget and the budget depends on its width. Break the
+    // circle with the widest that count can ever be — t.length — which can only
+    // over-reserve, never under.
+    const budget = maxChars - mark(t.length).length;
+    // Degenerate cap, narrower than the marker itself: honour the number rather
+    // than emit a marker that alone overruns it.
+    if (budget <= 0) return t.slice(0, maxChars);
+    // Weighted to the tail, which is where a suite that prints per-assertion
+    // puts its summary, but never zero head — an early stack trace is the
+    // other common shape and dropping it entirely would just invert the bug.
+    //
+    // Math.floor(budget * 0.35) rounds to 0 below budget 3, which would hand
+    // the whole allowance to the tail and quietly reinstate exactly that
+    // inversion. Floor the head at one character whenever there is room for
+    // two. A one-character budget is genuinely single-sided — there is no way
+    // to keep both ends of a string in one character — so it keeps the tail.
+    const head = budget >= 2 ? Math.max(1, Math.floor(budget * 0.35)) : 0;
+    const tail = budget - head;
+    return `${t.slice(0, head)}${mark(t.length - budget)}${t.slice(t.length - tail)}`;
   };
   const parts = [` (exit ${lastFailure.status ?? 'null'}${lastFailure.signal ? `, signal ${lastFailure.signal}` : ''})`];
   const out = clip(lastFailure.stdout);
@@ -237,6 +406,339 @@ export function formatRunFailure(maxChars = 2000) {
  * @returns {boolean} True when the file exists.
  */
 export function fileExists(path) { return existsSync(join(ROOT, path)); }
+
+/**
+ * Recursively collect files under `dir` whose basename matches `match`.
+ *
+ * Deterministic by construction: entries are sorted lexicographically at every
+ * level, so the result is identical on every run and every OS — the same
+ * property test-all.mjs's own `tests/` discovery relies on (#1440).
+ *
+ * A missing `dir` yields `[]` rather than throwing, so the caller reports its
+ * own contract failure (e.g. "discovery is empty") instead of the run dying
+ * mid-traversal with an ENOENT that says nothing about what was expected.
+ *
+ * @param {string} dir - Absolute directory to walk.
+ * @param {RegExp} match - Tested against each entry's basename.
+ * @param {Set<string>} [skipDirs] - Directory names never descended into.
+ * @returns {string[]} Absolute paths, parents before children.
+ */
+export function walkFiles(dir, match, skipDirs = new Set()) {
+  if (!existsSync(dir)) return [];
+  const out = [];
+  const entries = readdirSync(dir, { withFileTypes: true })
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      // A linked worktree carries a `.git` FILE, so a caller's `skipDirs` set —
+      // which matches by NAME — never fires on one, and the walk descends into a
+      // whole second checkout of this repository (#3499, #3762). The caller's
+      // own set stays authoritative for everything else.
+      if (isNestedCheckout(full)) continue;
+      if (!skipDirs.has(entry.name)) out.push(...walkFiles(full, match, skipDirs));
+    } else if (match.test(entry.name)) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+/**
+ * Make one of the repo's own dependencies resolvable from a sandbox Node cannot
+ * reach `ROOT/node_modules` from.
+ *
+ * The PDF sandboxes are created under `ROOT/output` and run a copy of
+ * generate-pdf.mjs, whose siblings theme-style.mjs and tracker-utils.mjs both
+ * `import * as yaml from 'js-yaml'`. That specifier resolves by walking parent
+ * directories up into `ROOT/node_modules`, and the walk starts from the
+ * importer's REALPATH, because --preserve-symlinks is off by default. On a
+ * checkout whose `output/` is symlinked out of the repo -- the layout people
+ * adopt as the manual workaround for #524 -- the walk begins outside the repo,
+ * never reaches `ROOT/node_modules`, and every spawned script dies with
+ * ERR_MODULE_NOT_FOUND before parsing a single argument. The suite then reports
+ * 20 behaviour regressions in assertions that never ran (#3165).
+ *
+ * Relocating those sandboxes to `tmpdir()` does NOT fix this: tmpdir is outside
+ * the repo too. They work today only because `ROOT/output` happens to be
+ * physically inside it, which is the assumption worth removing rather than
+ * relocating. Linking the package into the sandbox's own `node_modules` --
+ * beside the `playwright` stub each sandbox already writes there -- makes the
+ * sandbox self-sufficient wherever it physically lives.
+ *
+ * @param {string} sandboxDir - Sandbox root; its `node_modules/` is created if absent.
+ * @param {string} pkgName - Package directory name under `ROOT/node_modules`.
+ * @returns {string} Path to the package as seen from inside the sandbox.
+ */
+export function linkRepoPackage(sandboxDir, pkgName) {
+  const source = join(ROOT, 'node_modules', pkgName);
+  const dest = join(sandboxDir, 'node_modules', pkgName);
+  if (existsSync(dest)) return dest;
+  if (!existsSync(source)) {
+    throw new Error(`linkRepoPackage: ${pkgName} is not installed at ${source} -- run npm install`);
+  }
+  mkdirSync(dirname(dest), { recursive: true });
+  try {
+    // 'junction' is ignored on POSIX, and on Windows it is the one link type
+    // granted without Developer Mode or elevation -- the privilege whose absence
+    // aborted a whole suite in #2828. The copy below is the last resort.
+    symlinkSync(source, dest, 'junction');
+  } catch {
+    cpSync(source, dest, { recursive: true });
+  }
+  return dest;
+}
+
+/**
+ * Source with its comments blanked, for a structural check that greps a file
+ * for a call or a guard it has to contain.
+ *
+ * A regex cannot tell code from a comment that mentions it, so a suite that
+ * only documents the construct -- or a revert that comments one out instead of
+ * deleting it -- satisfies a raw grep and the check goes vacuous. Shared, so
+ * every suite that pins a caller structurally strips the same way.
+ *
+ * The line-comment pass cannot see strings, so `"a//b"` loses everything after
+ * the `//`, including any real call later on that line. Use this only where
+ * losing the rest of such a line is acceptable. A scan that must keep code next
+ * to a string holding comment-like text should use `codeMask` and `isCodeRange`.
+ *
+ * @param {string} source - JavaScript source text.
+ * @returns {string} The same source without block and line comments.
+ */
+export function stripJsComments(source) {
+  return source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+}
+
+/**
+ * Whether the `/` at `i` opens a regex literal rather than being division.
+ *
+ * The classic heuristic — look at the last significant token before it. A regex
+ * can only appear where a VALUE is expected, so an operator, an opening
+ * bracket, a comma, a semicolon or a value-position keyword before it means
+ * regex; an identifier, a number or a closing paren/bracket means division.
+ * `}` is genuinely ambiguous (block end vs object literal end) and is read as
+ * regex, the usual choice: over-reading here masks a few characters, while
+ * under-reading lets a regex's contents open a phantom string frame, which is
+ * the failure that hides code.
+ */
+export function startsRegex(src, i) {
+  let j = i - 1;
+  while (j >= 0 && /\s/.test(src[j])) j--;
+  if (j < 0) return true;
+  const prev = src[j];
+  if ('=(,:[!&|?{};+-*%~^<>'.includes(prev)) return true;
+  // A `)` normally ends an expression, so `/` after it is division — except
+  // when it closes a CONTROL condition, where a statement (and so a regex) may
+  // follow: `if (enabled) /"/.test(value);`. Walk back to the matching `(` and
+  // look at the keyword in front of it.
+  if (prev === ')') {
+    let depth = 0;
+    let k = j;
+    for (; k >= 0; k--) {
+      if (src[k] === ')') depth++;
+      else if (src[k] === '(' && --depth === 0) break;
+    }
+    if (k < 0) return false;
+    let w = k - 1;
+    while (w >= 0 && /\s/.test(src[w])) w--;
+    let e = w;
+    while (w >= 0 && /[A-Za-z0-9_$]/.test(src[w])) w--;
+    return ['if', 'while', 'for', 'switch', 'catch', 'with'].includes(src.slice(w + 1, e + 1));
+  }
+  if (/[A-Za-z0-9_$]/.test(prev)) {
+    let k = j;
+    while (k >= 0 && /[A-Za-z0-9_$]/.test(src[k])) k--;
+    const word = src.slice(k + 1, j + 1);
+    // Every name below is also a legal PROPERTY name, and `obj.return / 7` is
+    // division. Read as a regex, it runs to the next `/` and masks whatever
+    // follows -- and this scan's failure direction is a silent pass, so masked
+    // code reads as a clean repo. A preceding `.` (or `?.`) settles it.
+    if (k >= 0 && src[k] === '.') return false;
+    // `throw` and `default` were absent until this function became shared. Both
+    // take an operand, so `throw /x/` and `export default /x/` are regexes; read
+    // as division, a quote inside one opens a phantom string that masks the
+    // lines after it. That is the exact failure the docblock above calls the
+    // unsafe direction, and the raw-link scan's failure direction is a silent
+    // pass, so a masked line reads as a clean repo.
+    return ['return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
+      'case', 'do', 'else', 'yield', 'await', 'throw', 'default'].includes(word);
+  }
+  return false;
+}
+
+/**
+ * A per-character map of which positions in `src` are CODE — string and
+ * template TEXT and comments are not, but a template's `${...}` substitution
+ * is, recursively.
+ *
+ * Not a JavaScript lexer, and deliberately not one: `test-all.mjs` states the
+ * suite runs "on a fresh clone with only Node", so there is no parser
+ * dependency available to a test here. This covers the constructs a
+ * scan-history call is actually written with — the status string argument
+ * (`'added'`, `'skipped_title'`), a commented-out call, and the template-string
+ * child snippet the repo already uses to drive these writers
+ * (web/src/lib/core/pipeline.ts builds one).
+ *
+ * Regex literals are NOT distinguished from division. A `/.../ ` argument to
+ * appendToScanHistory would make the gate fail LOUDLY, which is the safe
+ * direction for a sentinel and a signal to revisit this — never a silent pass.
+ *
+ * @param {string} src
+ * @returns {boolean[]} isCode[i] for every index in src.
+ */
+export function codeMask(src) {
+  const mask = new Array(src.length).fill(true);
+  // Bottom frame is the file itself. A `${` pushes a code frame whose parent is
+  // the template it interpolates into; `braces` tracks object/block nesting so
+  // the `}` that CLOSES the substitution is told apart from an inner one.
+  const stack = [{ template: false, braces: 0 }];
+  let i = 0;
+
+  while (i < src.length) {
+    const top = stack[stack.length - 1];
+    const c = src[i];
+    const n = src[i + 1];
+
+    if (top.template) {
+      if (c === '\\') { mask[i++] = false; if (i < src.length) mask[i++] = false; continue; }
+      if (c === '`') { mask[i++] = false; stack.pop(); continue; }
+      if (c === '$' && n === '{') {
+        mask[i++] = false;
+        mask[i++] = false;
+        stack.push({ template: false, braces: 0 });
+        continue;
+      }
+      mask[i++] = false;
+      continue;
+    }
+
+    if (c === '/' && n === '/') {
+      while (i < src.length && src[i] !== '\n') mask[i++] = false;
+      continue;
+    }
+    if (c === '/' && n === '*') {
+      const close = src.indexOf('*/', i + 2);
+      const stop = close === -1 ? src.length : close + 2;
+      while (i < stop) mask[i++] = false;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      mask[i++] = false;                                  // opening quote
+      while (i < src.length) {
+        if (src[i] === '\\') { mask[i++] = false; if (i < src.length) mask[i++] = false; continue; }
+        const closing = src[i] === c;
+        mask[i++] = false;
+        if (closing) break;
+      }
+      continue;
+    }
+    if (c === '`') { mask[i++] = false; stack.push({ template: true }); continue; }
+    if (c === '/' && startsRegex(src, i)) {
+      // A regex literal's contents are DATA. Not masking them let a quote or a
+      // backtick inside one open a phantom string or template frame that then
+      // swallowed real code — scan-hn.mjs carries `/```yaml|```/g`, six
+      // backticks, which is that hazard live in a writer file today.
+      mask[i++] = false;                                  // opening slash
+      let inClass = false;
+      while (i < src.length) {
+        const ch = src[i];
+        if (ch === '\\') { mask[i++] = false; if (i < src.length) mask[i++] = false; continue; }
+        if (ch === '\n') break;                            // unterminated; stop rather than run away
+        if (ch === '[') inClass = true;
+        else if (ch === ']') inClass = false;
+        else if (ch === '/' && !inClass) { mask[i++] = false; break; }
+        mask[i++] = false;
+      }
+      while (i < src.length && /[a-z]/.test(src[i])) mask[i++] = false;   // flags
+      continue;
+    }
+    if (c === '{') { top.braces++; i++; continue; }
+    if (c === '}') {
+      const closesSubstitution = top.braces === 0 && stack.length > 1 && stack[stack.length - 2].template;
+      if (closesSubstitution) { mask[i++] = false; stack.pop(); continue; }
+      if (top.braces > 0) top.braces--;
+      i++;
+      continue;
+    }
+    i++;
+  }
+  return mask;
+}
+
+/** Whether every character of `src.slice(from, to)` is code. */
+export const isCodeRange = (isCode, from, to) => isCode.slice(from, to).every(Boolean);
+
+/**
+ * Link the repository's whole installed dependency tree into a sandbox
+ * directory, so a script copied out of the repo can still resolve its package
+ * imports.
+ *
+ * Checking and linking are one operation on purpose. symlinkSync succeeds
+ * against a target that does not exist, so a separate check is one a call site
+ * can forget. The link is then created dangling, the sandboxed script dies with
+ * ERR_MODULE_NOT_FOUND, and the section's own catch reports that as a crash of
+ * whatever it was testing. A git worktree is the ordinary way to land in that
+ * state: test-all.mjs itself still resolves js-yaml through the parent
+ * checkout's `node_modules` by Node's upward walk, while `join(ROOT,
+ * 'node_modules')` inside the worktree does not exist. The suite is designed to
+ * run on a fresh clone with only Node (see the file header), where an absent
+ * tree is the expected state, so the caller is handed a reason to report and
+ * skip on instead of a broken sandbox.
+ *
+ * 'junction' on Windows, because a directory symlink needs
+ * SeCreateSymbolicLinkPrivilege, which a normal shell lacks unless Developer
+ * Mode is on. Junctions need no privilege, and the two constraints they add are
+ * already met: the target is absolute and is a directory on a local volume. The
+ * type argument is ignored off Windows.
+ *
+ * @param {string} destDir - Sandbox directory to receive the node_modules link.
+ * @param {string} [root=ROOT] - Repository root holding the installed tree.
+ * @returns {string|null} null once linked; otherwise why it could not be.
+ */
+export function linkNodeModules(destDir, root = ROOT) {
+  const target = join(root, 'node_modules');
+  try {
+    // isDirectory, because statSync succeeds on a regular FILE standing where the
+    // tree belongs. Without this an executable one links cleanly and the sandbox
+    // gets a symlink to a file, which is the broken sandbox this function exists
+    // to refuse. The message says what it is rather than calling it unreadable.
+    if (!statSync(target).isDirectory()) {
+      return `node_modules at ${target} is not a directory`;
+    }
+    // Traverse permission, not read permission, is what resolution needs, and
+    // statSync alone proves neither: it succeeds on a directory the caller
+    // cannot enter. Measured here on 4 modes of a node_modules holding one
+    // package, importing it through a link:
+    //
+    //   mode  import  statSync  readdirSync  accessSync X_OK
+    //   0755  works   ok        ok           ok
+    //   0111  works   ok        EACCES       ok
+    //   0444  EACCES  ok        ok           EACCES
+    //   0000  EACCES  ok        EACCES       EACCES
+    //
+    // Node resolves a bare specifier by stat'ing paths under the directory
+    // rather than listing it, so `x` alone is enough and `r` alone is not.
+    // X_OK is the only probe that agrees with the import on all 4 rows;
+    // readdirSync disagrees on both of the interesting ones, skipping a tree
+    // that works and passing one that does not.
+    accessSync(target, constants.X_OK);
+  } catch (err) {
+    // statSync, because existsSync collapses EACCES and ELOOP into the same
+    // false an absent tree produces, and `npm ci` is the wrong advice for a
+    // tree that is there and unreadable. Both cases still skip: throwing here
+    // lands in the call site's catch, which is where the misattribution this
+    // function exists to prevent came from.
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') {
+      return `node_modules is not installed at ${root} -- run \`npm ci\` there`;
+    }
+    return `node_modules at ${target} is unreadable (${err.code})`;
+  }
+  symlinkSync(target, join(destDir, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+  return null;
+}
 
 let bashCache = null;
 let bashSourceCache = null;
@@ -384,5 +886,176 @@ export async function captureConsoleErrors(fn) {
     return { result, errors };
   } finally {
     console.error = original;
+  }
+}
+
+/**
+ * Build a throwaway git repository for the two updater suites that drive git
+ * through the `gitIn` seam (`updater-add-paths`, `updater-is-tracked`). Only
+ * the first asserts on ignore RESOLUTION; the second writes its own .gitignore
+ * and then asks about index membership, which is a different question.
+ *
+ * The pins below are the reason this is shared rather than copied, but they are
+ * not all load-bearing for both callers, and this docstring should not imply
+ * otherwise. Mutation-tested by dropping each pin under a GIT_CONFIG_GLOBAL it
+ * exists to neutralise:
+ *
+ *   - `commit.gpgsign=false` and `core.hooksPath` → an empty dir. Either one
+ *     inherited from the environment breaks every commit the fixtures make.
+ *     Dropping either reddens BOTH suites.
+ *   - `core.excludesFile` → an empty file. A global ignore rule silently alters
+ *     what is measured (the failure mode reported in #2269). Dropping it reddens
+ *     updater-add-paths only: updater-is-tracked writes its own .gitignore and
+ *     then reads index membership, which a global rule does not move. Kept for
+ *     both as a defensive pin, proven by one.
+ *
+ * Point `core.excludesFile` at an empty file rather than /dev/null: git on
+ * Windows maps that to `nul` and dies with "fatal: cannot use nul as an
+ * exclude file".
+ *
+ * Kept as one body so a pin cannot be dropped from one caller while the other
+ * keeps it — which is the drift CodeRabbit flagged on #2531, where two copies
+ * meant a pin added to one left the other silently unprotected. Note that is a
+ * weaker guarantee than "deleting a pin fails both suites", which the table
+ * above shows is only true for two of the three.
+ *
+ * The two other `makeRepo` fixtures under tests/ are deliberately NOT folded in
+ * here: `updater-local-system-edits` pins line endings instead of excludes and
+ * seeds a base commit plus an `upstream` branch, and `updater-rollback-behavior`
+ * pins nothing. They are different fixtures that share a name, not copies of
+ * this one.
+ *
+ * `gitIn` is injected rather than imported so this module keeps depending on
+ * nothing but Node builtins — 57 of the 62 suites import it, and none of them
+ * should pull in update-system.mjs as a side effect of asking for `pass`/`fail`.
+ *
+ * @param {(dir: string, ...args: string[]) => any} gitIn - Updater's git runner.
+ * @param {object} [options]
+ * @param {string} [options.prefix='co-updater-'] - mkdtemp prefix, so a leftover
+ *   temp dir names the suite that made it.
+ * @param {boolean} [options.includeRoot=false] - Add `root` to the returned ctx.
+ *   `addPaths` resolves paths against it to decide what is a directory; without
+ *   it the guard would lstat the real career-ops checkout instead of the
+ *   fixture. `isTracked` never reads it.
+ * @returns {{dir: string, g: Function, ctx: {git: Function, root?: string}}}
+ */
+export function makeUpdaterRepo(gitIn, { prefix = 'co-updater-', includeRoot = false } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const g = (...args) => gitIn(dir, ...args);
+  g('init', '-q', '-b', 'main', '.');
+  g('config', 'user.email', 'test@example.com');
+  g('config', 'user.name', 'Test');
+  const emptyExcludes = join(dir, '.git', 'co-empty-excludes');
+  const emptyHooks = join(dir, '.git', 'co-empty-hooks');
+  writeFileSync(emptyExcludes, '');
+  mkdirSync(emptyHooks, { recursive: true });
+  g('config', 'commit.gpgsign', 'false');
+  g('config', 'core.excludesFile', emptyExcludes);
+  g('config', 'core.hooksPath', emptyHooks);
+  return { dir, g, ctx: includeRoot ? { git: g, root: dir } : { git: g } };
+}
+
+/**
+ * Build a git environment nothing ambient can reach into.
+ *
+ * GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM pin the FILE layers. They do not
+ * close the RUNTIME layer: GIT_CONFIG_COUNT with its KEY_n / VALUE_n pairs is
+ * applied AFTER every config file, so an ambient `core.excludesFile` injected
+ * that way overrides even the one a fixture sets for itself, and the isolation
+ * silently stops holding - the exact leak this pinning exists to close,
+ * arriving through the one door left open (#2567).
+ *
+ * COUNT is set to 0 rather than deleting the variables: it is a single
+ * authoritative value, and git reads KEY_n / VALUE_n only up to COUNT, so any
+ * stragglers are inert without having to enumerate them.
+ *
+ * `base` exists so a regression case can hand in a parent environment
+ * carrying the injection. Every caller shares this one construction on purpose:
+ * a test that hand-rolled its own env would keep passing if the pin were
+ * dropped here, which is how the gap got in.
+ */
+export function hermeticGitEnv(gitConfigPath, base = process.env) {
+  const env = {
+    ...base,
+    GIT_CONFIG_COUNT: '0',
+    GIT_CONFIG_GLOBAL: gitConfigPath,
+    GIT_CONFIG_SYSTEM: gitConfigPath,
+  };
+  // These two DO have to be enumerated, because COUNT governs KEY_n / VALUE_n
+  // and nothing else, and neither of them is a config FILE that GLOBAL/SYSTEM
+  // could shadow. Both survive all three pins above:
+  //
+  //   GIT_CONFIG_PARAMETERS  the channel git uses to hand `-c` down to a
+  //                          subprocess, so it reaches every git invocation.
+  //                          Measured: with it set, a commit made through this
+  //                          env took its author from the ambient value.
+  //   GIT_CONFIG             redirects the `git config` command, reads AND
+  //                          writes. The fixtures in test-all.mjs call `git config` to
+  //                          set themselves up, so with it set that write lands
+  //                          in the ambient file instead of the fixture: the
+  //                          setting never takes effect, and the suite mutates
+  //                          a file outside its own temp dir.
+  delete env.GIT_CONFIG_PARAMETERS;
+  delete env.GIT_CONFIG;
+  return env;
+}
+
+/**
+ * Can a directory write-deny actually stop THIS process from creating a file?
+ *
+ * Two suites arrange a write failure by making the tracker's directory
+ * unwritable and asserting the structured error that follows. An elevated
+ * Windows shell is not bound by that ACE: the temp-file write lands, the CLI
+ * exits 0, and the assertion reports `code=0 json=undefined`, which reads like
+ * the CLI is broken rather than like a setup step that could not be arranged
+ * (#3423). That is the same "permissions do not apply to me" case those suites
+ * already skip for root on POSIX, so it takes the same loud skip.
+ *
+ * Measured, never inferred: this performs the very operation those tests depend
+ * on - apply the deny, then create a file with the same fs API - instead of
+ * asking a proxy whether the shell is elevated. A proxy is the wrong tool here.
+ * A restricted token still lists the Administrators SID in `whoami /groups`
+ * (present for deny only), and inside one elevated token PowerShell's
+ * Set-Content is refused while Node's writeFileSync succeeds, so "is elevated"
+ * and "can still write" are genuinely different questions.
+ *
+ * Fails toward RUNNING the assertion: if the probe cannot be arranged at all
+ * (no icacls, a non-zero exit, anything thrown) it answers true so the caller
+ * still executes its check. A skip on an inconclusive probe would quietly turn
+ * "the failure could not be arranged" into "the failure handling is fine",
+ * which is the blind spot those assertions exist to catch.
+ *
+ * Lives here rather than in each suite because the two copies of this setup
+ * have already drifted once: `tests/mark-pdf-ready.test.mjs` says it mirrors
+ * `set-status-tests.mjs`, and it mirrored this bug along with the arrangement.
+ *
+ * @returns {boolean} true when the deny binds, or when it could not be evaluated.
+ */
+export function directoryDenyBinds() {
+  let probeDir = null;
+  try {
+    probeDir = mkdtempSync(join(tmpdir(), 'co-denyprobe-'));
+    execFileSync('icacls', [probeDir, '/deny', '*S-1-1-0:(WD,AD)'], { stdio: 'ignore' });
+    try {
+      writeFileSync(join(probeDir, 'canary.tmp'), 'x');
+      return false;
+    } catch {
+      return true;
+    }
+  } catch {
+    return true;
+  } finally {
+    if (probeDir) {
+      // Cleanup must not escape this function. A throw from `finally` replaces
+      // the value the try block already computed, so a failed rmSync would turn
+      // a decided probe into an exception and take both callers down with it -
+      // the opposite of the fail-toward-running-the-assertion contract above.
+      // Windows makes that reachable: rmSync can answer EPERM for a while after
+      // a child exits (the reason the wrapper retries at all), and this
+      // directory carries a deny ACE. A leaked temp directory is the cheaper
+      // failure.
+      try { execFileSync('icacls', [probeDir, '/remove:d', '*S-1-1-0'], { stdio: 'ignore' }); } catch {}
+      try { rmSync(probeDir, { recursive: true, force: true }); } catch {}
+    }
   }
 }

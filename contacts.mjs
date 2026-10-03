@@ -12,7 +12,10 @@
  * vCard 3.0 property or a tracker join. Minimum valid row: >= 4 cells with
  * non-empty name + company; all channels optional; `-` for tracker# when the
  * contact precedes an application. type: recruiter|hiring-manager|peer|
- * interviewer|other (contacto taxonomy). Lines are updated in place when a
+ * interviewer|internal-referral|other (contacto taxonomy; internal-referral
+ * is a saved contact with a REAL prior relationship — a past interviewer, or
+ * a contact from an earlier application at the same company — distinct from
+ * peer's cold, no-prior-relationship assumption). Lines are updated in place when a
  * contact's details change — unlike the append-only salary-observations log.
  * If two lines share the same name + company (same UID), the LAST line wins
  * the --vcf export — in an update-in-place store the freshest line is the
@@ -33,6 +36,16 @@
  * collected into a `quality` object — reported loudly, never dropped
  * silently, never throwing.
  *
+ * Saved contacts at a company are looked up by contact-lookup.mjs (#4691),
+ * which the `contacto` mode runs before a cold WebSearch — see that file for
+ * the matching logic (it reuses tracker-utils.mjs's normalizeCompany(), the
+ * same key merge-tracker.mjs/set-status.mjs/company-history.mjs use for
+ * same-company lookups). Kept out of THIS file deliberately: contacts.mjs is
+ * zero-dep by design (its CLI test suite copies just this script + lib/ +
+ * path-resolver.mjs into an isolated temp dir — see tests/contacts.test.mjs
+ * §9), and tracker-utils.mjs pulls in tracker-parse.mjs's tracker-aliases.json
+ * and the js-yaml package, which that isolation deliberately does not carry.
+ *
  * Run: node contacts.mjs                     (JSON: contacts + quality + total)
  *      node contacts.mjs --summary           (human-readable table)
  *      node contacts.mjs --vcf [path]        (write vCard, default output/contacts.vcf)
@@ -42,25 +55,65 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync, lstatSync } from 'fs';
 import { join, dirname, resolve, relative, isAbsolute, basename, sep } from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 import { createHash } from 'crypto';
+import { validateFlags, hasFlag, flagValue } from './lib/cli-flags.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
+import { getCareerOpsRoot } from './path-resolver.mjs';
 
 const CAREER_OPS = dirname(fileURLToPath(import.meta.url));
-const CONTACTS_PATH = join(CAREER_OPS, 'data/contacts.tsv');
-const DEFAULT_VCF = join(CAREER_OPS, 'output/contacts.vcf');
+const DATA_ROOT = getCareerOpsRoot();
+const CONTACTS_PATH = join(DATA_ROOT, 'data/contacts.tsv');
+const DEFAULT_VCF = join(DATA_ROOT, 'output/contacts.vcf');
 
-const args = process.argv.slice(2);
+
+// --- CLI args ---
+const KNOWN_FLAGS = ['--summary', '--self-test', '--caller-id', '--vcf', '--help', '-h'];
+
+const USAGE = `Usage:
+  node contacts.mjs                     # JSON: contacts + quality + total
+  node contacts.mjs --summary           # human-readable table
+  node contacts.mjs --vcf [path]        # write vCard, default output/contacts.vcf
+  node contacts.mjs --vcf --caller-id   # FN as "Jane Doe (Acme recruiter)"
+  node contacts.mjs --self-test         # run the in-memory test suite
+  node contacts.mjs --help              # print this usage block and exit`;
+
+// Only the CLI has flags. When this module is imported, process.argv belongs to
+// whoever imported it — so parsing it here validated the *host's* flags against
+// this script's, and `import { parseContacts } from './contacts.mjs'` inside a
+// process started with any unrecognized flag died at import with
+// "unrecognized flag(s)". Invisible while the suite ran in its own process;
+// surfaced the moment it moved to tests/ and was imported by test-all (#3306).
+const args = isMainModule(import.meta.url) ? process.argv.slice(2) : [];
+validateFlags(args, KNOWN_FLAGS, USAGE, { valueFlags: ['--vcf'] });
 const summaryMode = args.includes('--summary');
 const selfTestMode = args.includes('--self-test');
 const callerIdMode = args.includes('--caller-id');
-const vcfIdx = args.indexOf('--vcf');
-const vcfMode = vcfIdx !== -1;
-// Optional path argument: the token right after --vcf, unless it is another flag.
-const vcfPathArg = vcfMode && args[vcfIdx + 1] && !args[vcfIdx + 1].startsWith('--') ? args[vcfIdx + 1] : null;
+const vcfMode = hasFlag(args, '--vcf');
+const vcfPathArg = (() => {
+  if (!vcfMode) return null;
+  const val = flagValue(args, '--vcf');
+  return val === undefined || val.startsWith('--') ? null : val || null;
+})();
 
-const VALID_TYPES = new Set(['recruiter', 'hiring-manager', 'peer', 'interviewer', 'other']);
+// `peer` (contacto taxonomy): no prior relationship — a cold, warm-intro-style
+// outreach where a job ask would be premature. `internal-referral` (#4691) is
+// its opposite: a REAL prior relationship already exists (a saved contact from
+// an earlier application at this same company, or a past interviewer), so the
+// outreach can name that history directly and ask for a referral outright.
+const VALID_TYPES = new Set(['recruiter', 'hiring-manager', 'peer', 'interviewer', 'internal-referral', 'other']);
 
 // --- Phonebook parsing (TSV) ---
+export function escapeFormulaCell(value) {
+  const cell = String(value ?? '');
+  return /^'*[=+\-@]/.test(cell) ? `'${cell}` : cell;
+}
+
+export function unescapeFormulaCell(value) {
+  const cell = String(value ?? '');
+  return cell.replace(/^'(?='*[=+\-@])/, '');
+}
+
 // line: {name}\t{company}\t{type}\t{title}\t{phone}\t{email}\t{linkedin}\t{tracker#|-}\t{notes}
 // Cells are split BEFORE trimming the line (only the trailing \r is stripped):
 // name is the required FIRST cell, so a leading tab (empty name) must surface
@@ -74,7 +127,7 @@ export function parseContacts(content) {
     const line = raw.replace(/\r$/, '');
     const t = line.trim();
     if (!t || t.startsWith('#')) continue;
-    const cells = line.split('\t').map(c => c.trim());
+    const cells = line.split('\t').map(c => unescapeFormulaCell(c.trim()));
     if (cells.length < 4) { quality.shortRows.push({ line: lineNo, cells: cells.length }); continue; }
     const [name, company, type, title = '', phone = '', email = '', linkedin = '', tracker = ''] = cells;
     // notes is the LAST column: a stray tab pasted inside a note must not
@@ -464,6 +517,6 @@ function main() {
   }
 }
 
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+if (isMainModule(import.meta.url)) {
   main();
 }

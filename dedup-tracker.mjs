@@ -3,7 +3,8 @@
  * dedup-tracker.mjs — Remove duplicate entries from applications.md
  *
  * Groups by normalized company, then merges only rows whose full role title
- * matches exactly (case- and whitespace-normalized). Keeps entry with highest
+ * matches exactly (case- and whitespace-normalized) and whose posting URLs, when
+ * both rows carry one, do not conflict. Keeps entry with highest
  * score. If discarded entry had more advanced status, preserves that status.
  * Merges notes.
  *
@@ -13,16 +14,32 @@
 import { readFileSync, copyFileSync, existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { getCareerOpsRoot, resolveTrackerPath } from './path-resolver.mjs';
+import { roleFuzzyMatch } from './role-matcher.mjs';
+import { normalizeUrl } from './url-key.mjs';
 import {
-  openTrackerTransaction, rebuildRow, resolveTrackerPath, normalizeCompany,
+  openTrackerTransaction, rebuildRow, normalizeCompany,
 } from './tracker-utils.mjs';
 import { resolveColumns, parseTrackerRow, normalizeVia } from './tracker-parse.mjs';
+import { validateFlags } from './lib/cli-flags.mjs';
 
-const CAREER_OPS = dirname(fileURLToPath(import.meta.url));
+const CAREER_OPS = getCareerOpsRoot();
 // Support both layouts: data/applications.md (boilerplate) and applications.md
 // (original). CAREER_OPS_TRACKER lets tests point the script at an isolated
 // fixture so the real user tracker is never touched.
 const APPS_FILE = resolveTrackerPath(CAREER_OPS);
+
+// ── CLI args ────────────────────────────────────────────────────────
+// Same shape as scan-ats-full.mjs (#1633/PR #1635) and reply-watch.mjs
+// (#2743): an unrecognized flag must fail fast, never silently fall through
+// to the live-run default and write to the real tracker (#2744). Shared via
+// lib/cli-flags.mjs's validateFlags() (#2775).
+const KNOWN_FLAGS = ['--dry-run', '--help', '-h'];
+const USAGE = `Usage: node dedup-tracker.mjs [--dry-run]`;
+
+const cliArgs = process.argv.slice(2);
+
+validateFlags(cliArgs, KNOWN_FLAGS, USAGE);
 const DRY_RUN = process.argv.includes('--dry-run');
 
 // Ensure the target tracker directory exists in both normal and fixture mode.
@@ -182,6 +199,22 @@ function normalizeRole(role) {
 }
 
 /**
+ * Check whether two tracker rows name two different postings.
+ *
+ * Only two present-and-different keys are evidence: a blank or placeholder URL
+ * yields no key from normalizeUrl() and is UNKNOWN, never a conflict.
+ *
+ * @param {object} a - First parsed applications.md row.
+ * @param {object} b - Second parsed applications.md row.
+ * @returns {boolean} True when both rows carry a URL and the URLs differ.
+ */
+function urlsConflict(a, b) {
+  const urlA = normalizeUrl(a.url);
+  const urlB = normalizeUrl(b.url);
+  return Boolean(urlA && urlB && urlA !== urlB);
+}
+
+/**
  * Decide whether two same-company tracker rows should be deduplicated.
  *
  * Rows merge only when they describe the same opening: either the exact same
@@ -196,11 +229,21 @@ function normalizeRole(role) {
  * status, report link, and notes unless the rows are the exact same report
  * identity.
  *
+ * Two present-and-different posting URLs veto every tier, report identity
+ * included (#4562). That is the rule merge-tracker.mjs applies (`urlDiffers`),
+ * through the same normalizeUrl(): two rows cannot be one application while
+ * naming two postings. A blank or placeholder URL yields no key and is
+ * UNKNOWN, never a conflict, so rows without URLs behave exactly as before.
+ * Blocking fails toward a duplicate the user can see; merging on a conflict
+ * deletes a real application.
+ *
  * @param {object} a - First parsed applications.md row.
  * @param {object} b - Second parsed applications.md row.
  * @returns {boolean} True when dedup may cluster the two rows as duplicates.
  */
 function roleMatch(a, b) {
+  if (urlsConflict(a, b)) return false;
+
   if (sameReportIdentity(a, b)) return true;
   if (normalizeRole(a.role) !== normalizeRole(b.role)) return false;
 
@@ -349,7 +392,11 @@ for (const [company, companyEntries] of groups) {
 
     for (let j = i + 1; j < companyEntries.length; j++) {
       if (processed.has(j)) continue;
+      // roleMatch() only compares against the seed row, so a seed with no URL
+      // would admit two rows naming different postings and one would be
+      // deleted. Check the candidate's URL against every member already in.
       if (roleMatch(companyEntries[i], companyEntries[j])
+          && !cluster.some(member => urlsConflict(member, companyEntries[j]))
           && (!isBlindGroup || withinBlindWindow(companyEntries[i].date, companyEntries[j].date))) {
         cluster.push(companyEntries[j]);
         processed.add(j);
