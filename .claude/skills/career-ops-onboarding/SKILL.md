@@ -12,9 +12,15 @@ license: MIT
 node doctor.mjs --json
 ```
 
-Output: `{"onboardingNeeded": <bool>, "missing": [...], "warnings": [...], "autoCopied": [...]}` — `missing` lists whichever of `cv.md`, `config/profile.yml`, `modes/_profile.md`, `portals.yml` are absent; `warnings` is reserved for non-blocking setup signals; `autoCopied` lists customization files (`modes/_profile.md` or `modes/_custom.md`) doctor copied from `modes/_profile.template.md` / `modes/_custom.template.md`.
+Output: `{"onboardingNeeded": <bool>, "missing": [...], "unpersonalized": [...], "warnings": [...], "autoCopied": [...]}` — `missing` lists whichever of `cv.md`, `config/profile.yml`, `modes/_profile.md`, `portals.yml` are absent; `warnings` is reserved for non-blocking setup signals. This command is read-only: `autoCopied` is empty unless `--init-templates` is explicitly added during onboarding.
 
-**If `onboardingNeeded` is true, enter onboarding mode.** Do NOT proceed with evaluations, scans, or any other mode until the basics are in place. Guide the user step by step:
+**If `onboardingNeeded` is true, enter onboarding mode.** Do NOT proceed with evaluations, scans, or any other mode until the basics are in place. First initialize missing personalization files:
+
+```bash
+node doctor.mjs --json --init-templates
+```
+
+This copies `modes/_profile.md`, `modes/_custom.md`, `modes/_brief.md`, and `voice-dna.md` from their corresponding `.template.md` files when absent; existing files are preserved. `autoCopied` lists files created on this run. Use the returned `missing` and `unpersonalized` fields to guide the user step by step:
 
 ## Step 0: Free Tier Check
 
@@ -88,9 +94,7 @@ Once all files exist, confirm:
 > - Run the scan entrypoint for your CLI to search portals: `/career-ops scan`, `/career-ops-scan`, or ask Codex to run `scan`
 > - Open the command menu for your CLI: `/career-ops`, the CLI-specific alias, or ask Codex to show the available career-ops modes
 >
-> Everything is customizable — just ask me to change anything.
->
-> Tip: Having a personal portfolio dramatically improves your job search. If you don't have one yet, the author's portfolio is also open source: github.com/santifer/cv-santiago — feel free to fork it and make it yours."
+> Everything is customizable — just ask me to change anything."
 
 Then suggest automation:
 > "Want me to scan for new offers automatically? I can set up a recurring scan every few days so you don't miss anything. Just say 'scan every 3 days' and I'll configure it."

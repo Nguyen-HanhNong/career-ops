@@ -30,6 +30,12 @@ Read `portals.yml` which contains:
 - `tracked_companies[].parser`: Optional local parser for SSR pages or stable HTML
 - `title_filter`: Keywords (positive/negative/seniority_boost) for filtering job titles
 
+Before using saved per-company WebSearch queries, run `node audit-portals.mjs --queries`.
+It checks enabled `scan_method: websearch` entries against `title_filter.positive`
+offline, and flags queries with no keyword overlap. Review warnings especially
+after changing target roles; synonyms or another language may legitimately differ.
+This is advisory: do not automatically rewrite queries or exclude a company.
+
 ## Discovery Strategy (4 Levels)
 
 ### Level 0 — Local Parser (CHEAPEST)
@@ -44,10 +50,12 @@ Recommended Contract:
   scan_method: local_parser
   parser:
     command: node
-    script: scripts/parsers/example-company-jobs.js
+    script: local/example-company-jobs.js
     format: jobs-json-v1
   enabled: true
 ```
+
+The script must resolve inside the repo root (security boundary in `providers/local-parser.mjs`). Keep a private, non-contributed parser under a gitignored path — `local/` is ignored by default — so it is never staged; `scripts/parsers/` is for a parser you intend to upstream. See `docs/local-parser-cookbook.md`.
 
 Typically, the parser is company-specific and already knows the URL, selectors, and pagination. `args` is optional: use it however it helps the script author, for example, to reuse it across companies, pass `{careers_url}` or `{company}`, activate a debug flag, save a JSON snapshot, or control any parser-specific behavior.
 
@@ -82,6 +90,14 @@ Object format with `results`:
 ```
 
 `company` is optional; if not provided, `scan.mjs` uses the name from `tracked_companies`.
+
+A posting date is optional too, and worth emitting when the source exposes one: without it the offer has no `postedAt`, so `max_posting_age_days`, `--posted-after`/`--posted-before` and `--since` all pass it through (the same "don't penalize missing data" convention the filters use everywhere else). Epoch milliseconds or any string `Date.parse` accepts, under `postedAt`, `posted_at`, `publishedAt`, `published_at`, `published_date`, `datePosted` or `date_posted` — the last spelling is what a page's JSON-LD `JobPosting` block already calls it:
+
+```json
+[
+  { "title": "Senior AI Engineer", "url": "https://example.com/jobs/123", "location": "Remote", "postedAt": "2026-02-08" }
+]
+```
 
 The scanner does not need to persist the full JSON after reading stdout. If a parser also generates an artifact for auditing or debugging, save it under `data/parser-output/{company}/` and keep it out of git (JSON files in `.gitignore`; `.gitkeep` files are kept in git to preserve the directory structure).
 
@@ -220,9 +236,10 @@ stop when response has no nextPageToken
    d. Normalize each job to `{title, url, company, location}`.
    e. Resolve relative URLs against `careers_url`.
    f. If the parser fails, log the error, attempt fallback via the ATS API if it exists, and continue with the other companies (**do not** add to `local_parser_ok`).
-   g. If the parser completes successfully (steps c–e without fatal error), add `entry.name` to `local_parser_ok` and accumulate jobs in candidates.
+   g. If the parser completes successfully (steps c–e without fatal error), add the current company name to `local_parser_ok` and accumulate jobs in candidates.
 
-4. **Level 1 — Playwright Scan** (parallel in batches of 3-5):
+4. **Level 1 — Playwright Scan** (sequential — NEVER parallel Playwright):
+   Browser-backed workers share one browser session, so concurrent `browser_navigate`/`browser_snapshot` calls cross-contaminate and a snapshot can return another company's page (#2551). Batching stays correct for the fetch-based levels below (Level 2 APIs/feeds, Level 3 queries), which open no shared session.
    For each company in `tracked_companies` with `enabled: true`, a defined `careers_url`, and a **name not listed in `local_parser_ok`**:
    a. `browser_navigate` to `careers_url`.
    b. `browser_snapshot` to read all job listings.
@@ -259,7 +276,8 @@ stop when response has no nextPageToken
 
 6b. **Filter by Location (Optional)** using `location_filter` from `portals.yml`:
    - If the `location_filter` block is absent, all locations pass (default behavior).
-   - Empty location on a posting → passes (do not penalize missing data).
+   - Empty location on a posting → passes by default (do not penalize missing data) — **unless** `strict: true` is set AND a restricting tier (`allow`, `block`, or `block_hard`) is configured, in which case an empty location is rejected instead. `strict` exists for a location-restricted sweep over a provider that never returns a location (iCIMS is the common case): without it, every out-of-region posting from that provider silently passes because the restricting tier is never consulted. `strict: true` alone, with no restricting tier, restricts nothing.
+   - Any keyword from `block_hard` (like `block`, but `always_allow` cannot override it) matches → reject.
    - Any keyword from `block` present → reject (precedes allow).
    - Empty `allow` → passes (already cleared block).
    - Non-empty `allow` → must match at least one keyword.
@@ -270,9 +288,10 @@ stop when response has no nextPageToken
    - Opt-in. If the key is absent, 0, or non-positive, all ages pass (default behavior).
    - An offer is skipped only when the provider supplied a posting date (`postedAt`) AND it is older than N days.
    - Offers from providers that expose no date always pass (do not penalize missing data).
+   - The filter applies to every source, including an employer's own ATS board; there is no per-source exemption. An old posting date is not evidence that a role is closed — evergreen roles may remain open for months. To include them, increase the window or disable `max_posting_age_days` (affects all sources), then verify the specific posting before applying. CLI date-window flags still apply independently.
 
 7. **Deduplicate** against 3 sources — via `node dedup-check.mjs` (see step 2; never by reading the raw files):
-   - `scan-history.tsv` + `pipeline.md` → exact URL already seen (`--url`/`urls[]`, `seen: true`)
+   - `scan-history.tsv` + `pipeline.md` → exact URL already seen (`--url`/`urls[]`, `seen: true`; rows marked `skipped_location` or `skipped_age` never count as seen — `dedup-check.mjs` inherits this from `scan.mjs`'s loaders; see Scan History)
    - `applications.md` → normalized company + role already evaluated (`--pair`/`pairs[]`, `seen: true`)
    Drop any candidate the script reports as `seen: true`; only `seen: false` candidates continue.
 
@@ -301,11 +320,12 @@ stop when response has no nextPageToken
 
 8. **For each new verified offer that passes filters**:
    a. Add to the `pipeline.md` "Pending" section: `- [ ] {url} | {company} | {title}`
-   b. Record in `scan-history.tsv`: `{url}\t{date}\t{query_name}\t{title}\t{company}\tadded`
+   b. Record in `scan-history.tsv` with status `added`. Write the row with `formatScanHistoryRow` / `appendToScanHistory` from `scan.mjs` rather than composing the tab-separated line by hand — the column set has grown and will grow again, and a hand-written row is silently short.
 
 9. **Offers filtered by title**: record in `scan-history.tsv` with status `skipped_title`.
 10. **Duplicate offers**: record with status `skipped_dup`.
 11. **Expired offers (Level 3)**: record with status `skipped_expired`.
+12. **Scan errors / failures**: record in `scan-history.tsv` with status `skipped_error`.
 
 12. **Level 4 — Gmail Job Alert Ingestion** (if `linkedin_alerts.enabled: true`):
    a. Build search query: `from:(all configured senders) is:unread -label:{processed_label_name}`
@@ -336,7 +356,7 @@ If a non-publicly accessible URL is found:
 
 ## Scan History
 
-`data/scan-history.tsv` tracks ALL seen URLs. Each row has nine tab-separated columns:
+`data/scan-history.tsv` tracks ALL seen URLs. Each row has twelve tab-separated columns, in the order `formatScanHistoryRow` emits them (`scan.mjs`):
 
 | # | Column | Example | Notes |
 |---|--------|---------|-------|
@@ -345,20 +365,29 @@ If a non-publicly accessible URL is found:
 | 3 | `portal` | `Ashby — AI PM` | Query name from `portals.yml` |
 | 4 | `title` | `PM AI` | Job title as returned by the ATS |
 | 5 | `company` | `Acme` | Company name |
-| 6 | `status` | `added` | `added`, `skipped_dup`, `skipped_title`, `skipped_expired` |
+| 6 | `status` | `added` | `added`, `skipped_dup`, `skipped_title`, `skipped_expired`, `skipped_location`, `skipped_age`, `skipped_no_apply_control`, `skipped_invalid_url`, `skipped_blocked_host`, `cooldown:{company}:{until}` |
 | 7 | `location` | `Remote — Europe` | Location string (may be empty); persisted for later auditing |
-| 8 | `jd_fingerprint` | `a3f1c8d2e4b70592` | 64-bit SimHash of the JD text (16 hex chars); empty when no usable body was available |
-| 9 | `postedAt` | `2026-02-08` | ISO date the role was originally posted (as reported by the ATS); empty when not available |
+| 8 | `fingerprint` | `a3f1c8d2e4b70592` | 64-bit SimHash of the JD text (16 hex chars); empty when no usable body was available |
+| 9 | `posted_at` | `2026-02-08` | ISO date the role was originally posted (as reported by the ATS); empty when not available |
+| 10 | `trust_score` | `70` | Trust/legitimacy score, written only when the scanner flagged the posting (score < 100); empty otherwise |
+| 11 | `trust_flags` | `no_company_site,vague_jd` | Comma-joined trust flags, written under the same condition as col 10; empty otherwise |
+| 12 | `normalized_company` | `acme` | Canonical company key (`normalizeCompanyName`) so `Acme Inc.`, `Acme, Inc.` and `ACME  Inc` all match; col 5 stays faithful to what the provider returned |
+
+Columns are append-only: readers index by position, so new columns arrive at the end and older files keep their shorter rows. Never renumber or reorder. The header is written only when the file is created, so an existing file may still carry a shorter header than the rows being appended to it — that is expected, not corruption.
+
+`skipped_location` and `skipped_age` record what `location_filter` and `max_posting_age_days` removed. They exist so a mis-aimed threshold is visible in the data rather than only as a summary counter, and they carry no dedup weight: both name a setting the user edits, so a row written under the old threshold must not suppress the same posting once it moves. Each posting gets one such row per status, not one per scan.
+
+The scanner writes the other statuses in that list itself: `skipped_no_apply_control` for a page that loaded without an Apply control, `skipped_invalid_url` and `skipped_blocked_host` for a URL the input guard rejected, and `cooldown:{company}:{until}` for a posting held back by a cooldown window until that date. `skipped_dup` and `skipped_title` come from the agent workflow above.
 
 ```tsv
-url	first_seen	portal	title	company	status	location	jd_fingerprint	postedAt
-https://...	2026-02-10	Ashby — AI PM	PM AI	Acme	added	Remote	a3f1c8d2e4b70592	2026-02-08
+url	first_seen	portal	title	company	status	location	fingerprint	posted_at	trust_score	trust_flags	normalized_company
+https://...	2026-02-10	Ashby — AI PM	PM AI	Acme	added	Remote	a3f1c8d2e4b70592	2026-02-08			acme
 ```
 
 ### Filtering by posted date
 
 `first_seen` (column 2) is when **our scanner** spotted the URL — not when the
-employer actually posted it. That real posting date is column 9 (`postedAt`).
+employer actually posted it. That real posting date is column 9 (`posted_at`).
 To scope a scan to an absolute posting-date window (e.g. "only postings from
 the 17th to the 20th"), pass `--posted-after`/`--posted-before` on the CLI —
 both optional, both `YYYY-MM-DD`, both inclusive:
@@ -435,7 +464,7 @@ weekly, `--since 10` keeps a margin for a skipped run.
 
 ### Cross-listing detection
 
-The `jd_fingerprint` column exists to catch a specific double-submission hazard: the same role posted by the direct employer **and** by a recruitment agency, often with the employer name stripped from the agency listing. URL dedup and company+role dedup both miss this pair because the URLs and company names are different — but agencies rarely rewrite the requirements text, so a near-identical JD body is a reliable signal.
+The `fingerprint` column exists to catch a specific double-submission hazard: the same role posted by the direct employer **and** by a recruitment agency, often with the employer name stripped from the agency listing. URL dedup and company+role dedup both miss this pair because the URLs and company names are different — but agencies rarely rewrite the requirements text, so a near-identical JD body is a reliable signal.
 
 How it works:
 

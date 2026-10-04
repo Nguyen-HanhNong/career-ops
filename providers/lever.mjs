@@ -1,4 +1,5 @@
 // @ts-check
+import { DEFAULT_TIMEOUT_MS } from './_http.mjs';
 /** @typedef {import('./_types.js').Provider} Provider */
 
 // Lever provider — hits the public postings endpoint.
@@ -11,7 +12,7 @@ const ALLOWED_LEVER_HOSTS = new Set(['api.lever.co', 'api.eu.lever.co']);
 // description inlined, so a large board outgrows _http.mjs's 10s default:
 // jobgether is 42.8 MB and aborted at 10s on its own (#4177). Same value and
 // reasoning as ASHBY_TIMEOUT_MS, the other one-response board-wide ATS feed.
-const LEVER_TIMEOUT_MS = 30_000;
+const LEVER_TIMEOUT_MS = Math.max(30_000, DEFAULT_TIMEOUT_MS);
 
 /** @param {string} url */
 function assertLeverUrl(url) {
