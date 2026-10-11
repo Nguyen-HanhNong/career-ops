@@ -32,7 +32,7 @@ import {
   looksLikeScoreCell, isSeparatorRow, isHeaderRow, resolveColumns,
   normalizeTextKey, normalizeVia,
 } from './tracker-parse.mjs';
-import { CONTROL_CHARS } from './tracker-utils.mjs';
+import { CONTROL_CHARS, findDeadReportLink } from './tracker-utils.mjs';
 import { normalizeUrl } from './url-key.mjs';
 import { checkTrackerSync } from './tracker-sync-check.mjs';
 import { normalizeStatus } from './followup-cadence.mjs';
@@ -188,11 +188,25 @@ let brokenReports = 0;
 // points at a filename that never existed.
 const CLEANED_MARKER = '🧹';
 let cleanedReports = 0;
+let uninspectableReports = 0;
 for (const e of entries) {
-  const match = e.report.match(/\]\(([^)]+)\)/);
-  if (!match) continue;
-  const link = match[1];
-  if (!existsSync(join(TRACKER_DIR, link)) && !existsSync(join(CAREER_OPS, link))) {
+  // Shared rule (tracker-utils.mjs): first link, regular file, tracker dir then
+  // data root; a directory is not a report (#4748). Also used by merge-tracker
+  // and fix-report-links so all three agree on which rows are broken.
+  let inspectionFailure = null;
+  const link = findDeadReportLink(e.report, TRACKER_DIR, CAREER_OPS, {
+    onInspectionError: (failure) => { inspectionFailure = failure; },
+  });
+  if (inspectionFailure) {
+    // A permission or I/O error says nothing about whether the report exists,
+    // so this is neither "not found" nor a valid link. The helper returns null
+    // for it, and without this branch the row passed in silence (#4780).
+    const codes = [...new Set(inspectionFailure.errors.map(({ error: err }) => err?.code || 'unknown error'))].join(', ');
+    warn(`#${e.num}: Report could not be inspected (${codes}), so it may exist: ${inspectionFailure.link}`);
+    uninspectableReports++;
+    continue;
+  }
+  if (link !== null) {
     if (e.report.includes(CLEANED_MARKER)) {
       cleanedReports++;
       continue;
@@ -201,7 +215,7 @@ for (const e of entries) {
     brokenReports++;
   }
 }
-if (brokenReports === 0) ok('All report links valid');
+if (brokenReports === 0 && uninspectableReports === 0) ok('All report links valid');
 if (cleanedReports > 0) {
   ok(`${cleanedReports} report${cleanedReports === 1 ? '' : 's'} cleaned from disk and marked ${CLEANED_MARKER} (expected)`);
 }

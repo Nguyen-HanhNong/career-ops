@@ -12,6 +12,7 @@
 // requests out to dodge rate-limiting).
 // See .planning/codebase/ashby-scan-abort-diagnosis.md.
 import { fetchJsonWithRetry, DEFAULT_TIMEOUT_MS } from './_http.mjs';
+import { coerceId } from './_ids.mjs';
 
 const ASHBY_TIMEOUT_MS = Math.max(30_000, DEFAULT_TIMEOUT_MS);
 const ASHBY_RETRIES = 2;
@@ -320,6 +321,10 @@ export default {
       title: j.title || '',
       url: j.jobUrl || '',
       company: entry.name,
+      // Ashby's posting uuid — the only stable id this board API exposes
+      // (no separate employer requisition field), so requisitionId is left unset
+      // rather than guessed at.
+      externalId: coerceId(j.id),
       location: formatLocation(j),
       // Ashby's posting-api list ships `descriptionPlain` for free (same
       // payload, no per-job request) — mirrors lever. Enables scan.mjs's
