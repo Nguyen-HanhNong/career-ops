@@ -1736,6 +1736,24 @@ search_queries:
 #   max_pages: 10         # optional page cap (20 posts/page, default 10, max 10)
 #   enabled: true
 #
+# - name: Bluesky hiring posts            # public AppView API, no account/key
+#   provider: bluesky                     # no detect() — only reachable via provider:
+#   actors:                               # people whose own posts are read (recruiters, EMs)
+#     - jane.bsky.social                  # bare handle: employer taken from the post text, if named
+#     - handle: bob.example.com
+#       company: Acme                     # the employer YOU know this person hires for
+#   list: https://bsky.app/profile/me.bsky.social/lists/3kabc123  # optional curated list of people
+#   search:                               # optional full-network searches (newest first)
+#     - '"my team is hiring" engineer'
+#   since_days: 30        # optional window (default 30)
+#   max_pages: 3          # optional cap per actor/list/search (100 posts/page, default 3, max 10)
+#   aggregator: true      # many employers: dedupe on URL only, not company+role
+#   enabled: true
+#   # A post becomes a job only when it announces a hire AND links one vacancy
+#   # page (employer ATS/careers page, or a job board page when the text names
+#   # the employer). LinkedIn feed links, shorteners and forms are dropped. The
+#   # bsky.app permalink of the post is kept in the description as `Source:`.
+#
 # - name: Himalayas
 #   provider: himalayas
 # - name: Landing.jobs                    # tech board, Europe-focused
