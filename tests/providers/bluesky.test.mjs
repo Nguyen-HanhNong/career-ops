@@ -7,8 +7,9 @@
 //
 // The policy half reuses telegram-channel's helpers: a post is a Job only when
 // it announces a hire AND links one vacancy page; employer comes from the
-// user's declaration for a watched actor, the post text, or — blank — only when
-// the link is the employer's own vacancy page.
+// user's declaration for a watched actor, the post text, the link card's title,
+// the ATS board slug, or the poster's bio — blank only when the link is the
+// employer's own vacancy page. Deduced employers are flagged in `note`.
 import { pass, fail, ROOT } from '../helpers.mjs';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
@@ -17,7 +18,7 @@ console.log('\nProvider — bluesky');
 
 const DAY = 24 * 60 * 60 * 1000;
 const iso = (daysAgo) => new Date(Date.now() - daysAgo * DAY).toISOString();
-const card = (uri) => ({ $type: 'app.bsky.embed.external', external: { uri, title: 't', description: '' } });
+const card = (uri, title = 't') => ({ $type: 'app.bsky.embed.external', external: { uri, title, description: '' } });
 const facet = (uri) => [{ index: { byteStart: 0, byteEnd: 5 }, features: [{ $type: 'app.bsky.richtext.facet#link', uri }] }];
 const P = (rkey, handle, text, { daysAgo = 1, embed, facets } = {}) => ({
   uri: `at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/app.bsky.feed.post/${rkey}`,
@@ -29,7 +30,7 @@ const P = (rkey, handle, text, { daysAgo = 1, embed, facets } = {}) => ({
 const WD = 'https://xboxgaming.wd1.myworkdayjobs.com/Blizzard_External_Careers/job/Irvine/Associate-Game-Designer_R028085';
 const GH = 'https://boards.greenhouse.io/acme/jobs/4455667';
 
-// Employer named nowhere, link is the employer's ATS page → emitted, company blank.
+// Employer named nowhere, link is the employer's Workday page → company from the tenant.
 const P_ATS = P('a1', 'cydereal.bsky.social', 'My team is hiring an Associate Encounter Designer!\n\nWe\'d love a WoW PvE expert.', { embed: card(WD) });
 // LinkedIn feed update is not a vacancy → dropped.
 const P_LI_FEED = P('a2', 'designswarm.bsky.social', "I'm hiring. Tell your Senior user researcher friends in London.", { embed: card('https://www.linkedin.com/feed/update/urn:li:activity:7513528723799793664/') });
@@ -53,7 +54,7 @@ const quiet = { sleep: async () => {} };
 try {
   const mod = await import(pathToFileURL(join(ROOT, 'providers/bluesky.mjs')).href);
   const bs = mod.default;
-  const { postToJob, hiringTitle, postLinks, normalizeActors } = mod;
+  const { postToJob, hiringTitle, postLinks, normalizeActors, companyFromAtsUrl, companyFromCardTitle, companyFromProfile } = mod;
 
   if (bs.id === 'bluesky') pass('bluesky.id is "bluesky"'); else fail(`bluesky.id is ${JSON.stringify(bs.id)}`);
   if (typeof bs.detect !== 'function') pass('bluesky has no detect() — explicit provider: only'); else fail('bluesky must not auto-detect');
@@ -76,23 +77,67 @@ try {
 
   // ── postToJob policy ──
   const ats = postToJob(P_ATS);
-  if (ats && ats.url === WD && ats.company === '' && ats.title.startsWith('My team is hiring')) pass('employer ATS link + no named employer → Job with blank company, url = the ATS page');
+  if (ats && ats.url === WD && ats.company === 'Xboxgaming' && ats.title.startsWith('My team is hiring')) pass('employer ATS link + no named employer → company from the Workday tenant, url = the ATS page');
   else fail(`P_ATS → ${JSON.stringify(ats)}`);
   if (ats?.description.includes('Source: https://bsky.app/profile/cydereal.bsky.social/post/a1 (posted by @cydereal.bsky.social)')) pass('description carries the bsky.app permalink and poster as Source:');
   else fail(`P_ATS description → ${JSON.stringify(ats?.description)}`);
+  if (ats?.note === 'bsky post https://bsky.app/profile/cydereal.bsky.social/post/a1 by @cydereal.bsky.social; company inferred from workday board slug, unverified')
+    pass('note carries the post permalink + poster and flags a deduced employer as unverified');
+  else fail(`P_ATS note → ${JSON.stringify(ats?.note)}`);
   if (postToJob(P_LI_FEED) === null) pass('a LinkedIn feed update is not a vacancy link → dropped'); else fail('P_LI_FEED should drop');
   if (postToJob(P_CHATTER) === null) pass('a post that announces no hire is dropped'); else fail('P_CHATTER should drop');
   if (postToJob(P_FREEZE) === null) pass('"hiring freeze" does not read as a hiring post'); else fail('P_FREEZE should drop');
   const decl = postToJob(P_DECLARED, { company: 'Acme' });
-  if (decl && decl.company === 'Acme' && decl.url === GH) pass('a watched actor\'s declared company is the employer');
+  if (decl && decl.company === 'Acme' && decl.url === GH && !/inferred/.test(decl.note)) pass('a watched actor\'s declared company is the employer, not flagged as inferred');
   else fail(`P_DECLARED → ${JSON.stringify(decl)}`);
   const repost = postToJob(P_DECLARED, { company: 'Acme', isRepost: true });
-  if (repost && repost.company === '') pass('a declared company is never applied to that actor\'s reposts');
+  if (repost && repost.company === 'Acme' && /greenhouse board slug, unverified/.test(repost.note)) pass('a declared company is never applied to that actor\'s reposts (the slug names it instead, flagged)');
   else fail(`repost → ${JSON.stringify(repost)}`);
   if (postToJob(P_BOARD_ANON) === null) pass('a board link with no named employer is unattributable → dropped'); else fail('P_BOARD_ANON should drop');
   const named = postToJob(P_BOARD_NAMED);
   if (named && named.company === 'Northwind') pass('a board link with "Title @ Employer" in the text → Job with that employer');
   else fail(`P_BOARD_NAMED → ${JSON.stringify(named)}`);
+  // ── employer deduction ──
+  const gh = companyFromAtsUrl('https://job-boards.greenhouse.io/embed/job_app?for=north-wind&token=1');
+  if (gh?.company === 'North Wind' && gh.ats === 'greenhouse') pass('companyFromAtsUrl reads the Greenhouse embed ?for= board and humanizes the slug');
+  else fail(`greenhouse embed → ${JSON.stringify(gh)}`);
+  if (companyFromAtsUrl('https://jobs.ashbyhq.com/linear/abc')?.company === 'Linear' && companyFromAtsUrl('https://acme.com/careers/123') === null)
+    pass('companyFromAtsUrl reads ATS board slugs and ignores non-ATS hosts');
+  else fail('companyFromAtsUrl ashby/non-ATS');
+  const cards = [
+    ['Job Application for Staff Engineer at Acme Robotics', '', 'Acme Robotics'],
+    ['Northwind hiring Data Engineer in London | LinkedIn', 'https://www.linkedin.com/jobs/view/1/', 'Northwind'],
+    ['Acme - Senior Engineer', 'https://jobs.lever.co/acme/1', 'Acme'],
+    ['Senior Engineer | Remote', '', ''],
+  ];
+  const badCard = cards.find(([t, u, want]) => companyFromCardTitle(t, u) !== want);
+  if (!badCard) pass('companyFromCardTitle reads Greenhouse/LinkedIn/Lever/"at" shapes and refuses a location after a pipe');
+  else fail(`companyFromCardTitle(${JSON.stringify(badCard[0])}) → ${JSON.stringify(companyFromCardTitle(badCard[0], badCard[1]))}`);
+  const bios = [
+    ['Senior Recruiter at Contoso helping people grow', 'Contoso'],
+    ['Talent Partner @ Northwind | ex-Google', 'Northwind'],
+    ['Recruiter at Hays Technology', ''],
+    ['Agency recruiter for fintech clients. Recruiter @ Bigco', ''],
+    ['Engineer at Acme, Founder at SideCo', ''],
+    ['Dad, runner, coffee', ''],
+  ];
+  const badBio = bios.find(([d, want]) => companyFromProfile({ description: d }) !== want);
+  if (!badBio) pass('companyFromProfile takes one stated employer, never an agency, a past role or an ambiguous bio');
+  else fail(`companyFromProfile(${JSON.stringify(badBio[0])}) → ${JSON.stringify(companyFromProfile({ description: badBio[0] }))}`);
+  const P_BOARD_CARD = P('b1', 'rec.bsky.social', 'Now hiring a Data Engineer!', { embed: card('https://www.linkedin.com/jobs/view/4123456791/', 'Fabrikam hiring Data Engineer in Berlin | LinkedIn') });
+  const bc = postToJob(P_BOARD_CARD);
+  if (bc?.company === 'Fabrikam' && /link preview title, unverified/.test(bc.note)) pass('a board link the text leaves anonymous is attributed from its link card title, flagged');
+  else fail(`P_BOARD_CARD → ${JSON.stringify(bc)}`);
+  const bp = postToJob(P_BOARD_ANON, { profile: { description: 'Technical Recruiter @ Contoso' } });
+  if (bp?.company === 'Contoso' && /poster's Bluesky bio, unverified/.test(bp.note)) pass('a board link is attributed from the poster\'s bio when nothing else names the employer');
+  else fail(`P_BOARD_ANON + bio → ${JSON.stringify(bp)}`);
+  if (postToJob(P_BOARD_ANON, { profile: { description: 'Recruitment consultant at Hays' } }) === null) pass('an agency recruiter\'s bio never becomes the employer → still dropped');
+  else fail('agency bio attributed a board link');
+  const P_OWN = P('b2', 'em.bsky.social', 'We\'re hiring a Backend Engineer!', { facets: facet('https://careers.example.org/jobs/123') });
+  const own = postToJob(P_OWN);
+  if (own?.company === '' && /employer not named$/.test(own.note)) pass('an employer-site link with nothing naming the employer stays blank and says so');
+  else fail(`P_OWN → ${JSON.stringify(own)}`);
+
   if (postToJob(P_DIGEST) === null) pass('a post linking two vacancies is a digest → dropped'); else fail('P_DIGEST should drop');
 
   // ── normalizeActors ──
@@ -139,6 +184,32 @@ try {
   const declaredJob = jobs.find((j) => j.url === GH);
   if (declaredJob?.company === 'Acme') pass('a watched actor\'s post surfacing via search still gets their declared company');
   else fail(`declared via search → ${JSON.stringify(declaredJob)}`);
+
+  // ── profile lookup: only for posts still missing an employer, batched ──
+  const P_SEARCH_ANON = { ...P('c1', 'rec.bsky.social', 'Now hiring a Data Engineer!', { embed: card('https://www.linkedin.com/jobs/view/4123456792/') }),
+    author: { did: 'did:plc:cccccccccccccccccccccccc', handle: 'rec.bsky.social' } };
+  const profCalls = [];
+  const profCtx = {
+    ...quiet,
+    async fetchJson(url) {
+      profCalls.push(url);
+      if (url.includes('searchPosts')) return { posts: [P_SEARCH_ANON, P_DECLARED] };
+      if (url.includes('getProfiles')) return { profiles: [{ did: 'did:plc:cccccccccccccccccccccccc', handle: 'rec.bsky.social', description: 'Recruiter at Contoso' }] };
+      throw new Error(`unexpected ${url}`);
+    },
+  };
+  const profJobs = await bs.fetch({ name: 'P', search: 'now hiring' }, profCtx);
+  const prof = profCalls.filter((u) => u.includes('getProfiles'));
+  if (prof.length === 1 && prof[0] === 'https://public.api.bsky.app/xrpc/app.bsky.actor.getProfiles?actors=did%3Aplc%3Acccccccccccccccccccccccc'
+      && profJobs.some((j) => j.company === 'Contoso'))
+    pass('fetch() looks up bios once, only for authors whose posts no other source attributed');
+  else fail(`profile lookup → calls=${JSON.stringify(prof)} jobs=${JSON.stringify(profJobs.map((j) => j.company))}`);
+  const failCtx = { ...profCtx, async fetchJson(url) { if (url.includes('getProfiles')) throw new Error('503'); return profCtx.fetchJson(url); } };
+  const origErr = console.error; console.error = () => {};
+  let failJobs;
+  try { failJobs = await bs.fetch({ name: 'P', search: 'now hiring' }, failCtx); } finally { console.error = origErr; }
+  if (failJobs.length === 1) pass('a failed profile lookup drops only the bio fallback, not the run');
+  else fail(`profile failure → ${failJobs.length} jobs`);
 
   let emptyErr = '';
   try { await bs.fetch({ name: 'Empty' }, ctx); } catch (e) { emptyErr = e.message; }

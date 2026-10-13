@@ -23,13 +23,26 @@
 //      ATS/careers page wins over a board mirror; a LinkedIn feed update, a
 //      shortener, a form or a homepage is not a vacancy, and a post linking
 //      several vacancies is a digest and is skipped. `url` is that link.
-//   3. Employer, in order: the `company` YOU declared for a watched actor (only
-//      for posts that actor wrote, never their reposts) → an employer the post
-//      text names (`employerName`) → blank, and blank only when the link is
-//      the employer's own vacancy page, which names the employer when the
-//      posting is evaluated. Nothing is guessed from a handle or a link host.
-// The bsky.app permalink travels in `description` as `Source:`, so the person
-// who posted it stays one click away for outreach.
+//   3. Employer, in order, first hit wins:
+//        a. the `company` YOU declared for a watched actor (only for posts
+//           that actor wrote, never their reposts);
+//        b. an employer the post text names (`employerName`);
+//        c. the vacancy link's preview title, as stored in the post's link
+//           card ("Job Application for X at Acme", "Acme hiring X | LinkedIn");
+//        d. the vacancy link's ATS board slug or tenant
+//           (boards.greenhouse.io/acme, acme.wd1.myworkdayjobs.com);
+//        e. the poster's own Bluesky bio ("Recruiter @ Acme"), one batched
+//           getProfiles call for the posts a–d left blank. A bio that reads as
+//           an agency/staffing recruiter is never taken as the employer.
+//      c–e are deductions, not statements: the Job's `note` says which basis
+//      named the employer and that it is unverified, so the employer is
+//      confirmed at the source before evaluation (AGENTS.md, aggregator rule).
+//      Still blank → kept only when the link is the employer's own vacancy
+//      page; a board link with no employer is dropped. Nothing is taken from a
+//      handle.
+// The post permalink + poster ride in `note` (→ data/pipeline.md `note:`) and
+// in `description` as `Source:`, so the person who posted it stays one click
+// away for outreach.
 
 import { applicationLink, employerName } from './telegram-channel.mjs';
 import { DESCRIPTION_CAP } from './_html-to-text.mjs';
@@ -111,40 +124,234 @@ function webUrl(post) {
   return `https://bsky.app/profile/${who}/post/${m[2]}`;
 }
 
+// Words that make a name a vendor/board, not an employer.
+const NOT_EMPLOYER_RE = /^(?:linkedin|indeed|glassdoor|greenhouse|lever|ashby|workday|workable|smartrecruiters|careers?|jobs?|job board|apply|hiring|remote|hybrid|on-?site|us|usa|uk|eu|europe|worldwide|anywhere)$/i;
+const LOCATIONISH_RE = /\b(?:remote|hybrid|on-?site|full[- ]?time|part[- ]?time|contract)\b/i;
+const ANONYMOUS_RE = /\b(?:confidential|undisclosed|stealth|our client|a client)\b/i;
+// Agency/staffing recruiters name the agency, not the employer they fill for.
+const AGENCY_RE = /\b(?:agency|staffing|headhunt\w*|executive search|recruitment (?:firm|consultan\w*|partner\w*)|recruiting firm|freelance recruiter|independent recruiter|search firm|talent (?:solutions|partners))\b/i;
+const AGENCY_NAME_RE = /\b(?:recruit\w*|staffing|resourcing|search|talent|headhunt\w*|consult\w*|personnel|placement\w*)\b/i;
+// Large agencies whose names carry none of the words above.
+const KNOWN_AGENCY_RE = /^(?:hays|robert half|randstad|adecco|michael page|page group|harvey nash|teksystems|kforce|insight global|aerotek|allegis|manpower(?:group)?|experis|kelly(?: services)?|robert walters|hudson|korn ferry|spencer stuart|heidrick|russell reynolds|harnham|hirewell|jobot|cybercoders|motion|modis|akkodis|apex systems|lorien|nigel frank|jefferson frank|huxley|computer futures|oliver bernard|hired)\b/i;
+
+/** A deduced name, or '' when it does not read as an employer. */
+function plausibleName(raw) {
+  const n = String(raw || '').replace(/[​-‍﻿]/g, '').replace(/\s+/g, ' ').trim()
+    .replace(/^[-–—:|·•\s]+|[-–—:|·•,;!.\s]+$/g, '');
+  if (n.length < 2 || n.length > 60 || n.split(' ').length > 5) return '';
+  if (!/\p{L}/u.test(n) || NOT_EMPLOYER_RE.test(n) || LOCATIONISH_RE.test(n) || ANONYMOUS_RE.test(n)) return '';
+  if (/^https?:|\//i.test(n)) return '';
+  return n;
+}
+
+/** `acme-robotics_inc` → `Acme Robotics Inc`. */
+function humanizeSlug(slug) {
+  let s;
+  try { s = decodeURIComponent(slug); } catch { s = slug; }
+  return s.split(/[-_+.\s]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
+}
+
+// [host test, where the slug sits, ATS label for the note]
+const ATS_SLUGS = [
+  [/^(?:boards|job-boards)(?:\.eu)?\.greenhouse\.io$/, 'path', 'greenhouse'],
+  [/^jobs(?:\.eu)?\.lever\.co$/, 'path', 'lever'],
+  [/^jobs\.ashbyhq\.com$/, 'path', 'ashby'],
+  [/^apply\.workable\.com$/, 'path', 'workable'],
+  [/^(?:jobs|careers)\.smartrecruiters\.com$/, 'path', 'smartrecruiters'],
+  [/^ats\.rippling\.com$/, 'path', 'rippling'],
+  [/^jobs\.gem\.com$/, 'path', 'gem'],
+  [/\.wd\d+\.myworkdayjobs\.com$/, 'sub', 'workday'],
+  [/\.myworkdaysite\.com$/, 'none', 'workday'],
+  [/\.recruitee\.com$/, 'sub', 'recruitee'],
+  [/\.teamtailor\.com$/, 'sub', 'teamtailor'],
+  [/\.bamboohr\.com$/, 'sub', 'bamboohr'],
+  [/\.breezy\.hr$/, 'sub', 'breezy'],
+  [/\.jobs\.personio\.(?:de|com)$/, 'sub', 'personio'],
+  [/\.applytojob\.com$/, 'sub', 'jazzhr'],
+  [/\.pinpointhq\.com$/, 'sub', 'pinpoint'],
+];
+const SLUG_STOP_RE = /^(?:embed|job_app|jobs?|v\d+|www|careers?|apply|en|en-us)$/i;
+
+/**
+ * Employer from a vacancy link's ATS board slug or tenant, or null. Greenhouse's
+ * embed form carries the board in `?for=`. Exported for tests.
+ *
+ * @param {string} href
+ * @returns {{ company: string, ats: string } | null}
+ */
+export function companyFromAtsUrl(href) {
+  let u;
+  try { u = new URL(href); } catch { return null; }
+  const host = u.hostname.toLowerCase();
+  for (const [re, where, ats] of ATS_SLUGS) {
+    if (!re.test(host)) continue;
+    let slug = '';
+    if (where === 'sub') slug = host.split('.')[0];
+    else if (where === 'path') {
+      slug = u.searchParams.get('for') || u.pathname.split('/').filter(Boolean)[0] || '';
+    }
+    if (!slug || SLUG_STOP_RE.test(slug) || /^\d+$/.test(slug)) return null;
+    const company = plausibleName(humanizeSlug(slug));
+    return company ? { company, ats } : null;
+  }
+  return null;
+}
+
+/**
+ * Employer from the link card's title — the vacancy page's own og:title as
+ * the poster's client fetched it — or ''. Only shapes that say which part is
+ * the employer are read. Exported for tests.
+ *
+ * @param {string} title
+ * @param {string} href - The card's link, for host-specific shapes.
+ */
+export function companyFromCardTitle(title, href = '') {
+  const t = String(title || '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  let host = '';
+  try { host = new URL(href).hostname.toLowerCase(); } catch { /* none */ }
+  let m;
+  if ((m = t.match(/^Job Application for .+? at (.+)$/i))) return plausibleName(m[1]);
+  if ((m = t.match(/^(.+?) hiring .+?\|\s*LinkedIn$/i))) return plausibleName(m[1]);
+  if (/(^|\.)lever\.co$/.test(host) && (m = t.match(/^(.+?) - .+$/))) return plausibleName(m[1]);
+  const bare = t.replace(/\s*[|–—-]\s*(?:Greenhouse|Lever|Ashby|Workday|Workable|LinkedIn|Careers?|Jobs?)$/i, '');
+  if ((m = bare.match(/^.{3,}?\s(?:at|@)\s+([^@|]+)$/i))) return plausibleName(m[1]);
+  return '';
+}
+
+/**
+ * Employer the poster states in their own bio/display name ("Recruiter @
+ * Acme", "Engineering Manager at Acme"), or '' — also '' for agency
+ * recruiters, past roles, and bios naming more than one employer. Exported
+ * for tests.
+ *
+ * @param {{ displayName?: string, description?: string } | undefined} profile
+ */
+export function companyFromProfile(profile) {
+  const text = [profile?.displayName, profile?.description].filter((v) => typeof v === 'string').join('\n');
+  if (!text.trim() || AGENCY_RE.test(text)) return '';
+  const ROLE = String.raw`(?:recruit(?:er|ing)|talent(?: acquisition| partner| lead)?|sourcer|people(?: partner)?|hiring|eng(?:ineering)? manager|EM|manager|director|head of [\w ]{2,30}?|lead|engineer|developer|scientist|designer|researcher|founder|co-?founder|CTO|CEO|VP[\w ]{0,30}?|staff|principal|SWE|SRE)`;
+  const re = new RegExp(String.raw`\b${ROLE}\b[^@\n|·•]{0,25}?\s(?:at|@)\s?([\p{L}\p{N}][\p{L}\p{N}&'’ .-]{0,40})`, 'giu');
+  const found = new Set();
+  for (const segment of text.split(/[\n|·•/]+/)) {
+    if (/\b(?:ex-?|former(?:ly)?|previously|prev\b|alum)/i.test(segment)) continue;
+    for (const m of segment.matchAll(re)) {
+      // "@acme.bsky.social" mentions a handle; its first label is not a name.
+      const raw = m[1].replace(/\s+(?:and|&)\s.*$/i, '').split(/[,;()]/)[0].trim();
+      if (/\.[a-z]{2,}/i.test(raw)) continue;
+      // "Recruiter at Acme helping people grow": the name ends at the first
+      // lowercase word after it.
+      const [head, ...tail] = raw.split(' ');
+      const cut = [head];
+      for (const w of tail) { if (!/^[\p{Lu}\p{N}&]/u.test(w)) break; cut.push(w); }
+      const name = plausibleName(cut.join(' '));
+      if (name && !AGENCY_NAME_RE.test(name) && !KNOWN_AGENCY_RE.test(name)) found.add(name);
+    }
+  }
+  return found.size === 1 ? [...found][0] : '';
+}
+
+/** The link card's title when the card is the chosen vacancy link. */
+function cardTitleFor(record, url) {
+  const embed = record?.embed;
+  for (const ext of [embed?.external, embed?.media?.external]) {
+    if (ext && ext.uri === url && typeof ext.title === 'string') return ext.title;
+  }
+  return '';
+}
+
+/**
+ * Decide a post's Job, or why there is none. `missing` marks a hiring post
+ * with a vacancy link whose employer nothing named — the case a profile
+ * lookup can still resolve.
+ *
+ * @param {any} post
+ * @param {{ company?: string, isRepost?: boolean, profile?: any }} opts
+ */
+function analyzePost(post, opts) {
+  const none = { job: null, missing: false };
+  const record = post?.record;
+  const text = typeof record?.text === 'string' ? record.text : '';
+  if (!text.trim() || !HIRING_RE.test(text)) return none;
+  const link = applicationLink(postLinks(record));
+  if (!link) return none;
+  const title = hiringTitle(text);
+  if (!title) return none;
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+
+  let company = !opts.isRepost && typeof opts.company === 'string' ? opts.company.trim() : '';
+  let basis = company ? 'declared' : '';
+  if (!company && (company = employerName(lines))) basis = 'post text';
+  if (!company && (company = companyFromCardTitle(cardTitleFor(record, link.url), link.url))) basis = 'link preview title';
+  if (!company && link.kind === 'employer') {
+    const ats = companyFromAtsUrl(link.url);
+    if (ats) { company = ats.company; basis = `${ats.ats} board slug`; }
+  }
+  if (!company && (company = companyFromProfile(opts.profile))) basis = "poster's Bluesky bio";
+
+  // A board page (LinkedIn job view, an aggregator) proves nothing about who
+  // hires; without an employer the post is unattributable.
+  if (!company && link.kind !== 'employer') return { job: null, missing: true };
+
+  const permalink = webUrl(post);
+  const author = post?.author?.handle ? `@${post.author.handle}` : '';
+  const source = `\n\nSource: ${permalink}${author ? ` (posted by ${author})` : ''}`;
+  const noteParts = [`bsky post ${permalink}${author ? ` by ${author}` : ''}`];
+  if (basis && basis !== 'declared' && basis !== 'post text') noteParts.push(`company inferred from ${basis}, unverified`);
+  else if (!company) noteParts.push('employer not named');
+  const createdAt = Date.parse(record?.createdAt || post?.indexedAt || '');
+  return {
+    job: {
+      title,
+      url: link.url,
+      company,
+      location: '',
+      description: text.slice(0, DESCRIPTION_CAP - source.length) + source,
+      note: noteParts.join('; '),
+      ...(Number.isFinite(createdAt) ? { postedAt: createdAt } : {}),
+    },
+    missing: !company,
+  };
+}
+
 /**
  * Turn one AppView post view into a Job, or null when the policy cannot
  * attribute it. Exported for tests.
  *
  * @param {any} post - app.bsky.feed.defs#postView.
- * @param {{ company?: string, isRepost?: boolean }} [opts] - `company` is the
- *   employer the user declared for the watched actor; ignored for reposts.
+ * @param {{ company?: string, isRepost?: boolean, profile?: any }} [opts] -
+ *   `company` is the employer the user declared for the watched actor
+ *   (ignored for reposts); `profile` is the post author's profile view.
  */
 export function postToJob(post, opts = {}) {
-  const record = post?.record;
-  const text = typeof record?.text === 'string' ? record.text : '';
-  if (!text.trim() || !HIRING_RE.test(text)) return null;
-  const link = applicationLink(postLinks(record));
-  if (!link) return null;
-  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
-  const declared = !opts.isRepost && typeof opts.company === 'string' ? opts.company.trim() : '';
-  const company = declared || employerName(lines);
-  // A board page (LinkedIn job view, an aggregator) proves nothing about who
-  // hires; without a named employer the post is unattributable.
-  if (!company && link.kind !== 'employer') return null;
-  const title = hiringTitle(text);
-  if (!title) return null;
-  const permalink = webUrl(post);
-  const author = post?.author?.handle ? `@${post.author.handle}` : '';
-  const source = `\n\nSource: ${permalink}${author ? ` (posted by ${author})` : ''}`;
-  const createdAt = Date.parse(record?.createdAt || post?.indexedAt || '');
-  return {
-    title,
-    url: link.url,
-    company,
-    location: '',
-    description: text.slice(0, DESCRIPTION_CAP - source.length) + source,
-    ...(Number.isFinite(createdAt) ? { postedAt: createdAt } : {}),
-  };
+  return analyzePost(post, opts).job;
+}
+
+/**
+ * Profiles (bio + display name) for the given actors, keyed by lowercased
+ * DID. getProfiles takes 25 actors per call. A failed lookup only loses the
+ * bio fallback, never the run.
+ *
+ * @param {any} ctx
+ * @param {string[]} dids
+ * @returns {Promise<Map<string, any>>}
+ */
+async function fetchProfiles(ctx, dids) {
+  const out = new Map();
+  for (let i = 0; i < dids.length; i += 25) {
+    if (i > 0) await sleep(REQUEST_DELAY_MS, ctx);
+    const qs = dids.slice(i, i + 25).map((d) => `actors=${encodeURIComponent(d)}`).join('&');
+    try {
+      const data = await fetchJsonWithRetry(ctx, `${PUBLIC_API}/app.bsky.actor.getProfiles?${qs}`, { redirect: 'error' });
+      for (const p of Array.isArray(data?.profiles) ? data.profiles : []) {
+        if (typeof p?.did === 'string') out.set(p.did.toLowerCase(), p);
+      }
+    } catch (err) {
+      console.error(`⚠️  bluesky: profile lookup failed (${err.message}) — employers are not deduced from bios this run`);
+      break;
+    }
+  }
+  return out;
 }
 
 /** @param {unknown} raw @param {number} fallback @param {number} cap */
@@ -275,11 +482,11 @@ export default {
     const companyFor = (post) => declaredBy.get(String(post?.author?.handle || '').toLowerCase())
       ?? declaredBy.get(String(post?.author?.did || '').toLowerCase());
 
+    const items = [];
     const take = ({ post, isRepost }) => {
       if (!post?.uri || seenPosts.has(post.uri)) return;
       seenPosts.add(post.uri);
-      const job = postToJob(post, { company: companyFor(post), isRepost });
-      if (job) jobs.push(job);
+      items.push({ post, isRepost });
     };
 
     let first = true;
@@ -309,6 +516,21 @@ export default {
         (data) => (Array.isArray(data?.posts) ? data.posts : []).map((post) => ({ post, isRepost: false })),
         cutoff, maxPages, take);
       if (r.truncated) truncated.push(`search ${JSON.stringify(q)}`);
+    }
+
+    // Second pass: posts still missing an employer get their author's bio.
+    const analyzed = items.map((it) => ({ ...it, r: analyzePost(it.post, { company: companyFor(it.post), isRepost: it.isRepost }) }));
+    const dids = [...new Set(analyzed
+      .filter((a) => a.r.missing && typeof a.post?.author?.did === 'string' && DID_RE.test(a.post.author.did))
+      .map((a) => a.post.author.did.toLowerCase()))];
+    let profiles = new Map();
+    if (dids.length) { await pause(); profiles = await fetchProfiles(ctx, dids); }
+    for (const a of analyzed) {
+      const profile = a.r.missing ? profiles.get(String(a.post?.author?.did || '').toLowerCase()) : undefined;
+      const job = profile
+        ? analyzePost(a.post, { company: companyFor(a.post), isRepost: a.isRepost, profile }).job
+        : a.r.job;
+      if (job) jobs.push(job);
     }
 
     // Silent under ctx.maxPages, which is verify-portals asking for one page.

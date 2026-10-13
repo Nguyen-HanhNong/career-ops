@@ -1750,9 +1750,12 @@ search_queries:
 #   aggregator: true      # many employers: dedupe on URL only, not company+role
 #   enabled: true
 #   # A post becomes a job only when it announces a hire AND links one vacancy
-#   # page (employer ATS/careers page, or a job board page when the text names
-#   # the employer). LinkedIn feed links, shorteners and forms are dropped. The
-#   # bsky.app permalink of the post is kept in the description as `Source:`.
+#   # page (employer ATS/careers page, or a job board page once an employer is
+#   # known). LinkedIn feed links, shorteners and forms are dropped. Employer:
+#   # your `company:` → the post text → the link preview title → the ATS board
+#   # slug → the poster's bio (never an agency recruiter's). The last three are
+#   # deductions, flagged "unverified" in the pipeline.md `note:`, which also
+#   # carries the bsky.app post permalink + poster handle for outreach.
 #
 # - name: Himalayas
 #   provider: himalayas
