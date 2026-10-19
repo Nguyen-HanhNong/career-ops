@@ -1,5 +1,6 @@
 // @ts-check
 /** @typedef {import('./_types.js').Provider} Provider */
+import { BROWSER_LIKE_USER_AGENT } from './_http.mjs';
 
 // LinkedIn guest API provider — no authentication required.
 // Uses LinkedIn's public /jobs-guest endpoint, which returns job cards
@@ -24,7 +25,7 @@ const PAGE_DELAY_MS = 1200; // polite delay between pages
 
 // LinkedIn blocks default fetch UA — use a browser-like one.
 const LI_HEADERS = {
-  'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'user-agent': BROWSER_LIKE_USER_AGENT,
   'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'accept-language': 'en-US,en;q=0.9',
   'referer': 'https://www.linkedin.com/jobs/search/',
