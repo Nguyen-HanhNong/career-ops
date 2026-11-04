@@ -90,6 +90,12 @@ Show its rows in the final chat reply under the heading `Pages to check in your 
 If the script prints "nothing to check by hand", say that in one line instead.
 **This runs on every `/career-ops scan`**, including scans that found nothing new, because parked rows carry over between runs. After the table, add one line giving the count of other unreadable `[!]` rows (redirects, server errors, timeouts) from `node batch/blocked-pages.mjs --json`, and say that the full list is `node batch/blocked-pages.mjs`. Show the full table only when the user asks for it.
 
+### Score filter on the results table (user preference, 2026-11-03)
+
+The `| # | Company | Role | Score | PDF | Recommended action |` table at the end of `pipeline`, `batch`, and any other run that evaluates several roles lists **every role scoring 3.5/5 or above, and only those**, highest first. Never cut a 3.5+ row to shorten the table. Under it, add one line with the number of evaluated roles below 3.5 that were left out. If the user asks for them, show the full table.
+
+This changes the display only. Lower-scoring roles still get reports and tracker rows, `auto_pdf_score_threshold` stays as configured, and any role below 4.0 still carries the recommendation against applying.
+
 ## Off-Limits
 
 <!-- Things the agent must never do for you. Examples:
