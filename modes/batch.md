@@ -33,7 +33,7 @@ Before a worker runs the full A-F evaluation on a JD (reading `cv.md` + `modes/_
 - This gate only applies to batch/pipeline processing. It never applies to a single interactive evaluation (the user already decided the JD is worth a look by pasting/sharing it).
 - If `modes/_brief.md` exists and is filled in (not the unfilled template — compare against `modes/_brief.template.md` if unsure), prefer it over `modes/_profile.md` for this pass: same purpose as the `triage` mode's context, smaller read, and it keeps the gate's hard-DQ criteria and the `triage` mode's criteria in one place instead of two.
 
-**Discard log (auditable):** Every posting the gate filters out MUST be logged with a one-line reason so pre-filtering is never a silent black box. Append one line to `batch/logs/discard.log` (create the file/dir if absent) in the format `{ISO8601 timestamp}\t{job id}\t{url}\t{reason}`, in addition to the `skipped` row already written to `batch-state.tsv`. This log is the visible, auditable record of what the gate discarded and why -- review it periodically to tune the North Star archetypes if the gate is too aggressive or too lax.
+**Discard log (auditable):** Every posting the gate filters out MUST be logged with a one-line reason so pre-filtering is never a silent black box. Append one line to `batch/logs/discard.log` (create the file/dir if absent) in the format `{ISO8601 timestamp}\t{job id}\t{url}\t{reason}`, in addition to the `skipped` row already written to `batch-state.tsv`. This log is the visible, auditable record of what the gate discarded and why -- review it periodically to tune the North Star archetypes if the gate is too aggressive or too lax. `node discard-analytics.mjs --log batch/logs/discard.log` summarizes it: counts by reason, domain and day, plus the most frequent `title_mismatch` URLs to check by hand.
 
 ## Files
 
@@ -104,12 +104,13 @@ batch/batch-runner.sh [OPTIONS]
 ```
 
 Options:
+- `--cli NAME` — worker CLI: `claude` (default), `opencode`, `gemini`, `qwen` or `grok`; every CLI except `claude` runs one job at a time, with a single attempt per run (a later run still retries a failed job, up to `--max-retries`)
 - `--dry-run` — list pending jobs without executing
 - `--retry-failed` — retry only failed jobs
 - `--resume-paused` — resume jobs paused after a Claude session/rate limit
 - `--start-from N` — start from ID N
 - `--limit N` — max number of jobs to process in this run (positive integer; `0` is rejected, omit the flag for no limit)
-- `--parallel N` — N workers in parallel
+- `--parallel N` — N workers in parallel (`claude` only; other CLIs always use one worker)
 - `--max-retries N` — attempts per job (default: 2)
 - `--rate-limit-sleep N` — seconds to wait before retrying a transient rate-limited worker (default: 300; use 0 to pause the batch immediately)
 

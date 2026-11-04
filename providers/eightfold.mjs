@@ -113,7 +113,7 @@ function epochSecondsToMs(value) {
  * api:. An explicit `entry.domain` overrides any `?domain=` in the URL.
  *
  * @param {import('./_types.js').PortalEntry & {domain?: string}} entry
- * @returns {{host: string, domain: (string|null)}|null}
+ * @returns {{host: string, domain: (string|null), query?: string}|null}
  */
 export function resolveTenant(entry) {
   for (const raw of [entry?.api, entry?.careers_url]) {
@@ -133,7 +133,13 @@ export function resolveTenant(entry) {
     const fromUrl = parsed.searchParams.get('domain');
     const domain = override || (fromUrl && fromUrl.trim() ? fromUrl.trim() : null);
 
-    return { host: parsed.hostname.toLowerCase(), domain };
+    // Optional server-side keyword (`query:` on the entry), v2 only: narrows a
+    // big tenant below its 429 threshold (Netflix: 397 -> 135 rows for
+    // `engineer`, verified 2026-11-02). Absent -> URL unchanged.
+    const query = typeof entry.query === 'string' && entry.query.trim() ? entry.query.trim() : null;
+    return query
+      ? { host: parsed.hostname.toLowerCase(), domain, query }
+      : { host: parsed.hostname.toLowerCase(), domain };
   }
   return null;
 }
@@ -151,6 +157,7 @@ export function buildApiUrl(tenant, start = 0, num = PAGE_SIZE) {
   if (tenant.domain) params.set('domain', tenant.domain);
   params.set('start', String(start));
   params.set('num', String(num));
+  if (tenant.query) params.set('query', tenant.query);
   return `https://${tenant.host}/api/apply/v2/jobs?${params.toString()}`;
 }
 
