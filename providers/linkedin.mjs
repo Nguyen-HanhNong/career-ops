@@ -1,5 +1,6 @@
 // @ts-check
 /** @typedef {import('./_types.js').Provider} Provider */
+import { BROWSER_LIKE_USER_AGENT, fetchTextWithRetry } from './_http.mjs';
 
 // LinkedIn guest API provider — no authentication required.
 // Uses LinkedIn's public /jobs-guest endpoint, which returns job cards
@@ -18,13 +19,30 @@
 //     enabled: true
 
 const GUEST_API = 'https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search';
-const PAGE_SIZE = 25;
+const PAGE_SIZE = 25;          // requested per page; LinkedIn currently serves 10
 const DEFAULT_MAX_PAGES = 2;
-const PAGE_DELAY_MS = 1200; // polite delay between pages
+export const REQUEST_GAP_MS = 2500;   // min gap between ANY two LinkedIn requests, across entries
+const RETRY_POLICY = { retries: 2, baseDelayMs: 4_000, maxDelayMs: 20_000 };
+
+// scan.mjs runs sources CONCURRENCY-wide, so several linkedin_search entries
+// fire at once and the guest API answers 429. Serialize every LinkedIn request
+// through one module-level gate with a minimum gap between them.
+let gate = Promise.resolve();
+let lastRequestAt = 0;
+function throttled(fn, ctx) {
+  const pause = typeof ctx?.sleep === 'function' ? ctx.sleep : sleep;
+  const run = gate.then(async () => {
+    const wait = lastRequestAt + REQUEST_GAP_MS - Date.now();
+    if (wait > 0) await pause(wait);
+    try { return await fn(); } finally { lastRequestAt = Date.now(); }
+  });
+  gate = run.catch(() => {});
+  return run;
+}
 
 // LinkedIn blocks default fetch UA — use a browser-like one.
 const LI_HEADERS = {
-  'user-agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'user-agent': BROWSER_LIKE_USER_AGENT,
   'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
   'accept-language': 'en-US,en;q=0.9',
   'referer': 'https://www.linkedin.com/jobs/search/',
@@ -120,17 +138,25 @@ export default {
     const allJobs = [];
     const seenIds = new Set();
 
+    let start = 0;
     for (let page = 0; page < maxPages; page++) {
-      const start = page * PAGE_SIZE;
       const url = buildPageUrl(search, start);
 
       let html;
       try {
-        html = await ctx.fetchText(url, { headers: LI_HEADERS });
+        html = await throttled(() => fetchTextWithRetry(
+          /** @type {any} */ (ctx), url, { headers: LI_HEADERS }, RETRY_POLICY), ctx);
       } catch (err) {
-        // 429 = rate limited; 400 = bad params — stop pagination
-        if (err.status === 429 || err.status === 400) break;
-        throw err;
+        // A 429 that outlives the retries used to `break` silently, so a
+        // rate-limited search reported "0 jobs found" with no warning. Fail the
+        // entry loudly when nothing was fetched; keep a partial result (with a
+        // warning) when an earlier page already succeeded.
+        if (page === 0) {
+          if (err.status === 429) throw new Error('linkedin: rate-limited (HTTP 429) after retries — try again later');
+          throw err;
+        }
+        console.error(`⚠️  linkedin: ${entry.name} truncated at page ${page + 1} of ${maxPages} (${allJobs.length} jobs kept): ${err.message}`);
+        break;
       }
 
       if (!html || html.trim().length < 50) break;
@@ -150,10 +176,11 @@ export default {
         newOnPage++;
       }
 
-      // Fewer than a full page = last page
-      if (cards.length < PAGE_SIZE || newOnPage === 0) break;
-
-      if (page < maxPages - 1) await sleep(PAGE_DELAY_MS);
+      // LinkedIn serves fewer cards than `count` asks for (10, not 25), so a
+      // short page is NOT the last page. Stop only on an empty page or one
+      // that adds nothing new. Advance `start` by what was actually served.
+      if (cards.length === 0 || newOnPage === 0) break;
+      start += cards.length;
     }
 
     return allJobs;

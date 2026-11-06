@@ -14,7 +14,6 @@ import yaml from 'js-yaml';
 import { chromium } from 'playwright';
 import { config as loadDotenv } from 'dotenv';
 import { checkUrlLiveness } from './liveness-browser.mjs';
-import { resolveNoApplyControlPolicy } from './liveness-core.mjs';
 
 loadDotenv({ quiet: true });
 
@@ -176,6 +175,15 @@ function extractTitleFromResult(title) {
     .trim();
   cleaned = cleaned.replace(/\s+(?:@|\bat\b|\|)\s*[^|@–—-]+$/i, '').trim();
   return cleaned;
+}
+
+// What to do with a page that loaded but showed no Apply control. 'drop'
+// matches scan.mjs (skip it and record it in scan-history); 'keep' routes it to
+// manual review instead. Opt in with `liveness.no_apply_control: keep` in
+// portals.yml. This used to be imported from liveness-core.mjs, which never
+// exported it, so the script crashed on load.
+function resolveNoApplyControlPolicy(config = {}) {
+  return config?.liveness?.no_apply_control === 'keep' ? 'keep' : 'drop';
 }
 
 async function verifySearchOffers(offers, { noApplyControl = 'drop' } = {}) {
