@@ -60,6 +60,7 @@ import { fileURLToPath } from 'url';
 import { loadYaml } from './lib/yaml-document.mjs';
 
 import { makeHttpCtx } from './providers/_http.mjs';
+import { applyEntryResponseCap } from './scan.mjs';
 import { loadProviders, resolveProvider } from './providers/_registry.mjs';
 import { mergeProviderPlugins } from './plugins/_engine.mjs';
 import { flagValue, hasFlag, validateFlags } from './lib/cli-flags.mjs';
@@ -236,7 +237,9 @@ export async function auditCompanies(companies, {
       let result = { provider: providerId, scanMethod: entry.scan_method || null };
       if (providerId) {
         try {
-          const ctx = httpCtx || { ...makeHttpCtx(), maxPages: AUDIT_MAX_PAGES };
+          // Local patch: read a board the way the scan does, or one that sets
+          // max_response_mb is reported as an error here.
+          const ctx = applyEntryResponseCap(httpCtx ? { ...httpCtx } : { ...makeHttpCtx(), maxPages: AUDIT_MAX_PAGES }, entry);
           result.jobs = (await resolved.provider.fetch(entry, ctx)) || [];
         } catch (err) {
           result.error = err?.message || String(err);

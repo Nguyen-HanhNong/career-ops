@@ -291,7 +291,7 @@ stop when response has no nextPageToken
    - The filter applies to every source, including an employer's own ATS board; there is no per-source exemption. An old posting date is not evidence that a role is closed — evergreen roles may remain open for months. To include them, increase the window or disable `max_posting_age_days` (affects all sources), then verify the specific posting before applying. CLI date-window flags still apply independently.
 
 7. **Deduplicate** against 3 sources — via `node dedup-check.mjs` (see step 2; never by reading the raw files):
-   - `scan-history.tsv` + `pipeline.md` → exact URL already seen (`--url`/`urls[]`, `seen: true`; rows marked `skipped_title`, `skipped_location`, `skipped_age` or `skipped_no_apply_control` never count as seen — `dedup-check.mjs` inherits this from `scan.mjs`'s loaders; see Scan History)
+   - `scan-history.tsv` + `pipeline.md` → exact URL already seen (`--url`/`urls[]`, `seen: true`; rows marked `skipped_title`, `skipped_location`, `skipped_age`, `skipped_no_apply_control`, `skipped_content`, `skipped_visa`, `skipped_country_eligibility` or `skipped_experience` never count as seen — `dedup-check.mjs` inherits this from `scan.mjs`'s loaders; see Scan History)
    - `applications.md` → normalized company + role already evaluated (`--pair`/`pairs[]`, `seen: true`)
    Drop any candidate the script reports as `seen: true`; only `seen: false` candidates continue.
 
@@ -315,8 +315,9 @@ stop when response has no nextPageToken
 
    **Fallback (only if `check-liveness.mjs` is unavailable or errors on a URL):** fall back to a single sequential `browser_navigate` + `browser_snapshot` for that URL — never parallel Playwright. Classify it yourself:
    - **Active**: visible job title + role description + visible Apply/Submit/Apply Now control inside the main content area. Do not count generic header/navbar/footer text.
-   - **Expired** (any of these signals): final URL contains `?error=true`; page contains "job no longer available" / "no longer open" / "position has been filled" / "this job has expired" / "page not found"; or only navbar and footer are visible with no JD content (content < ~300 characters).
-   Do not interrupt the rest of the batch if one fallback check fails; mark it `skipped_expired` and continue.
+   - **Expired** (any of these signals): final URL contains `?error=true`; the page's HTTP response status is 404 or 410 (a "Page not found" message on a 200 response is not this signal); page contains "job no longer available" / "no longer open" / "position has been filled" / "this job has expired".
+   - **Unconfirmed**: only navbar and footer are visible, with no JD content (content < ~300 characters) and none of the expired signals above. The posting may not have rendered yet, so this is not evidence it closed.
+   Do not interrupt the rest of the batch if one fallback check fails. If expired: record `skipped_expired` and continue. If unconfirmed: skip it for this scan without recording it, so the next scan checks it again.
 
 8. **For each new verified offer that passes filters**:
    a. Add to the `pipeline.md` "Pending" section: `- [ ] {url} | {company} | {title}`
@@ -365,7 +366,7 @@ If a non-publicly accessible URL is found:
 | 3 | `portal` | `Ashby — AI PM` | Query name from `portals.yml` |
 | 4 | `title` | `PM AI` | Job title as returned by the ATS |
 | 5 | `company` | `Acme` | Company name |
-| 6 | `status` | `added` | `added`, `skipped_dup`, `skipped_title`, `skipped_expired`, `skipped_location`, `skipped_age`, `skipped_no_apply_control`, `skipped_invalid_url`, `skipped_blocked_host`, `cooldown:{company}:{until}` |
+| 6 | `status` | `added` | `added`, `skipped_dup`, `skipped_title`, `skipped_expired`, `skipped_location`, `skipped_age`, `skipped_no_apply_control`, `skipped_content`, `skipped_visa`, `skipped_country_eligibility`, `skipped_experience`, `skipped_date`, `skipped_invalid_url`, `skipped_blocked_host`, `cooldown:{company}:{until}` |
 | 7 | `location` | `Remote — Europe` | Location string (may be empty); persisted for later auditing |
 | 8 | `fingerprint` | `a3f1c8d2e4b70592` | 64-bit SimHash of the JD text (16 hex chars); empty when no usable body was available |
 | 9 | `posted_at` | `2026-02-08` | ISO date the role was originally posted (as reported by the ATS); empty when not available |
@@ -383,6 +384,8 @@ Cells are stored with reversible spreadsheet-formula escaping: tabs and line bre
 `skipped_title`, `skipped_location` and `skipped_age` record what `title_filter`, `location_filter` and `max_posting_age_days` removed. They exist so a mis-aimed setting is visible in the data rather than only as a summary counter, and they carry no dedup weight: each names a setting the user edits, so a row written under the old setting must not suppress the same posting once it moves. A keyword added to `title_filter.positive` gets back every title it now matches on the next scan. Each posting gets one such row per status, not one per scan. Only `title_filter` is recorded as `skipped_title`; a rejection by another field declared in `filter_on` is not.
 
 `skipped_no_apply_control` marks a page that loaded without a recognised Apply control. It also carries no dedup weight: the check not finding a button is not proof the posting is closed, so the next scan verifies the URL again. Unlike the other two observational statuses, which are decided from data already in hand, this re-check costs a browser load every time the URL comes up. It is recorded once per posting.
+
+`skipped_content`, `skipped_visa` and `skipped_country_eligibility` are written by `scan-dayforce.mjs` for postings its `content_filter`, visa filter and `country_eligibility_filter` removed. They name settings too, so they carry no dedup weight either: widen one of those filters and the next Dayforce scan hands the posting back. `scan.mjs` applies the same three filters but writes no row for them. `skipped_experience` is written by `scan.mjs` for a new posting `experience_filter` dropped (only with `action: drop`; the default `label` keeps it) because its JD states a minimum above your band; like the other config skips it carries no dedup weight, so changing your years or `stretch_years` hands it back. `skipped_date` is `scan-interamt.mjs`'s incremental cut, a posting published before its last scan, which that scan already covered; it does count as seen.
 
 The scanner writes the other statuses in that list itself: `skipped_invalid_url` and `skipped_blocked_host` for a URL the input guard rejected, and `cooldown:{company}:{until}` for a posting held back by a cooldown window until that date. `skipped_dup` comes from the agent workflow above, which also writes `skipped_title` for the titles it filters.
 

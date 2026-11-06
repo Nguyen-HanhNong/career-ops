@@ -47,6 +47,8 @@ import { fileURLToPath } from 'url';
 import { loadYaml } from './lib/yaml-document.mjs';
 
 import { fetchJson as defaultFetchJson, fetchTextHead as defaultFetchText, makeHttpCtx } from './providers/_http.mjs';
+import { ASHBY_TIMEOUT_MS } from './providers/ashby.mjs';
+import { LEVER_TIMEOUT_MS } from './providers/lever.mjs';
 import { isBlockedAddress } from './providers/_ip-guard.mjs';
 
 // The portal probes are the one place that keeps following redirects: they hit
@@ -111,6 +113,8 @@ const PROVIDERS_DIR = resolve(dirname(fileURLToPath(import.meta.url)), 'provider
 // How to turn a slug into a probe URL, and where the job list lives in the
 // response, for each supported ATS. Greenhouse/Ashby wrap jobs in `{ jobs }`;
 // Lever returns a bare array. `includeCompensation` mirrors the ashby provider.
+// `timeoutMs` is the one the provider fetches the same board with, so a board
+// `scan` reads is not reported unreachable here (none: _http.mjs's default).
 export const ATS = {
   greenhouse: {
     probeUrl: (slug) =>
@@ -126,6 +130,7 @@ export const ATS = {
   ashby: {
     probeUrl: (slug) =>
       `https://api.ashbyhq.com/posting-api/job-board/${slug}?includeCompensation=true`,
+    timeoutMs: ASHBY_TIMEOUT_MS,
     jobCount: (json) => (Array.isArray(json?.jobs) ? json.jobs.length : null),
     // The posting API returns only {jobs, apiVersion}; the board page titles
     // itself with the owner ('deepset Jobs'), which is the only name either
@@ -140,6 +145,7 @@ export const ATS = {
     // ?mode=json forces JSON output — some boards (e.g. Atlassian) return 404
     // on the bare path but respond correctly with this param.
     probeUrl: (slug, { eu = false } = {}) => `https://api.${eu ? 'eu.' : ''}lever.co/v0/postings/${slug}?mode=json`,
+    timeoutMs: LEVER_TIMEOUT_MS,
     jobCount: (json) => (Array.isArray(json) ? json.length : null),
     ownerUrl: (slug, { eu = false } = {}) => `https://jobs.${eu ? 'eu.' : ''}lever.co/${slug}`,
     ownerKind: 'html',
@@ -288,7 +294,8 @@ const AGGREGATOR_HOSTS = [
   'greenhouse.io', 'ashbyhq.com', 'lever.co', 'myworkdayjobs.com', 'workday.com',
   'smartrecruiters.com', 'jobvite.com', 'icims.com', 'bamboohr.com', 'gem.com',
   'recruitee.com', 'teamtailor.com', 'personio.com', 'workable.com', 'breezy.hr',
-  'linkedin.com', 'indeed.com', 'glassdoor.com', 'ycombinator.com', 'wellfound.com',
+  'paylocity.com', 'join.com', 'linkedin.com', 'indeed.com', 'glassdoor.com',
+  'ycombinator.com', 'wellfound.com',
 ];
 
 /** Subdomain labels that describe a careers site rather than the company. */
@@ -510,7 +517,7 @@ export async function probeSlug(
     };
   const url = spec.probeUrl(slug, { eu });
   try {
-    const json = await fetchJson(url);
+    const json = await fetchJson(url, spec.timeoutMs ? { timeoutMs: spec.timeoutMs } : undefined);
     const count = spec.jobCount(json);
     if (count == null)
       return {
@@ -867,6 +874,33 @@ export async function verifyCompanies(
 }
 
 /**
+ * Apply an entry's `max_response_mb` to a probe, as scan.mjs's
+ * applyEntryResponseCap does for the scan.
+ *
+ * Local patch: without it, a board the scan reads fine reports "HTTP body
+ * exceeded maxBytes" here. The scan.mjs function can't be imported, because
+ * scan.mjs imports this file.
+ *
+ * @param {object} ctx - Holds the fetchers; it is not changed.
+ * @param {{max_response_mb?: unknown}} entry
+ * @returns {object} A copy of ctx with capped fetchers, or ctx itself when the
+ *   entry sets no valid cap.
+ */
+function withEntryResponseCap(ctx, entry) {
+  const raw = entry?.max_response_mb;
+  const maxBytes = typeof raw === 'number' ? Math.floor(raw * 1024 * 1024) : NaN;
+  if (!Number.isFinite(maxBytes) || maxBytes < 1) return ctx;
+  const capped = { ...ctx };
+  for (const method of ['fetchJson', 'fetchText', 'fetchResponse']) {
+    const original = ctx[method];
+    if (typeof original === 'function') {
+      capped[method] = (url, opts = {}) => original(url, { ...opts, maxBytes });
+    }
+  }
+  return capped;
+}
+
+/**
  * One health row for one enabled entry; the body of verifyCompanies' pool.
  *
  * @param {object} company
@@ -883,7 +917,8 @@ async function verifyOne(company, { fetchJson, fetchText, providers, httpCtx }) 
   // reads the embed page instead.
   const embedOnly = match?.ats === 'ashby' && /** @type {any} */ (company).ashby?.embed === true;
   if (match && !embedOnly) {
-    const probe = await probeSlug(match.ats, match.slug, { fetchJson, eu: match.eu });
+    const { fetchJson: cappedFetchJson } = withEntryResponseCap({ fetchJson }, company);
+    const probe = await probeSlug(match.ats, match.slug, { fetchJson: cappedFetchJson, eu: match.eu });
     if (probe.status === 'live' || probe.status === 'empty') return { name, ...probe };
     // Wrong slug or ATS migration — cross-probe only for slug/unknown failures.
     if (probe.errorKind === 'slug_gone' || probe.errorKind === 'unknown') {
@@ -899,7 +934,7 @@ async function verifyOne(company, { fetchJson, fetchText, providers, httpCtx }) 
   if (providers && providers.size > 0) {
     const resolved = resolveProvider(company, providers, { skipIds: ['local-parser'] });
     if (resolved && resolved.provider) {
-      const probe = await probeProvider(company, resolved.provider, httpCtx || makeHttpCtx());
+      const probe = await probeProvider(company, resolved.provider, withEntryResponseCap(httpCtx || makeHttpCtx(), company));
       return { name, ...probe };
     }
   }
